@@ -1,0 +1,13 @@
+[package]
+
+name = "asteroidi"
+version = "0.0.1"
+authors = [ "Francesco Mazzoli <f@mazzo.li>" ]
+
+[[bin]]
+
+name = "asteroidi"
+
+[dependencies.sdl2]
+path = "/home/bitonic/src/rust-sdl2"
+branch = "macro-semicolons"
