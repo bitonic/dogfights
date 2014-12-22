@@ -4,7 +4,7 @@ extern crate sdl2_image;
 use sdl2::pixels::Color;
 use sdl2::rect::{Rect, Point};
 use sdl2::SdlResult;
-use sdl2::render::Renderer;
+use sdl2::render::{Renderer, Texture};
 use std::num::FloatMath;
 use vec2::Vec2;
 
@@ -13,22 +13,22 @@ pub mod vec2;
 // ---------------------------------------------------------------------
 // Constants
 
-static SCREEN_WIDTH: i32 = 1024;
-static SCREEN_HEIGHT: i32 = 768;
+static SCREEN_WIDTH: i32 = 800;
+static SCREEN_HEIGHT: i32 = 600;
 
 // ---------------------------------------------------------------------
 // Sprites
 
 #[deriving(PartialEq)]
-struct Sprite {
-    texture: sdl2::render::Texture,
+struct Sprite<'a> {
+    texture: & 'a Texture,
     rect: Rect,
     center: Point,
     // If the sprite is already rotated by some angle
     angle: f64,
 }
 
-impl Sprite {
+impl<'a> Sprite<'a> {
     fn render(&self, renderer: &Renderer, rotation: f64, dst: Option<Rect>) -> SdlResult<()> {
         let dst = match dst {
             None       => None,
@@ -36,7 +36,7 @@ impl Sprite {
         };
         let angle = rotation * 180./std::f64::consts::PI;
         renderer.copy_ex(
-            &self.texture, Some(self.rect), dst, self.angle - (-1. * angle),
+            self.texture, Some(self.rect), dst, self.angle - (-1. * angle),
             Some(self.center), sdl2::render::RendererFlip::None)
     }
 }
@@ -52,7 +52,7 @@ enum Rotating {
 }
 
 #[deriving(PartialEq)]
-struct ShipSpec {
+struct ShipSpec<'a> {
     color: Color,
     height: f64,
     width: f64,
@@ -61,18 +61,19 @@ struct ShipSpec {
     acceleration: f64,
     friction: f64,
     gravity: f64,
-    sprite: Sprite,
+    sprite: Sprite<'a>,
+    sprite_accelerating: Sprite<'a>,
 }
 
 #[deriving(PartialEq)]
-struct Ship {
-    spec: ShipSpec,
+struct Ship<'a> {
+    spec: ShipSpec<'a>,
     pos: Vec2<i32>,
     speed: Vec2<f64>,
     rotation: f64,
 }
 
-impl Ship {
+impl<'a> Ship<'a> {
     fn advance(&mut self, map: &Map, accelerating: bool, rotating: Rotating, dt: f64) -> () {
         // =============================================================
         // Apply the rotation
@@ -113,10 +114,14 @@ impl Ship {
         self.pos = map.bound(self.pos);
     }
 
-    fn render(&self, renderer: &Renderer, cam: &Camera) -> () {
+    fn render(&self, renderer: &Renderer, accelerating: bool, cam: &Camera) -> () {
         let pos = cam.adjust(self.pos);
         let dst = Rect{x: pos.x, y: pos.y, .. self.spec.sprite.rect};
-        self.spec.sprite.render(renderer, self.rotation, Some(dst)).ok().unwrap()
+        if accelerating {
+            self.spec.sprite_accelerating.render(renderer, self.rotation, Some(dst)).ok().unwrap()
+        } else {
+            self.spec.sprite.render(renderer, self.rotation, Some(dst)).ok().unwrap()
+        }
     }
 }
 
@@ -124,14 +129,14 @@ impl Ship {
 // Maps
 
 #[deriving(PartialEq)]
-struct Map {
+struct Map<'a> {
     w: i32,
     h: i32,
     background_color: Color, 
-    background_texture: sdl2::render::Texture,
+    background_texture: & 'a Texture,
 }
 
-impl Map {
+impl<'a> Map<'a> {
     fn render(&self, renderer: &Renderer, cam: &Camera) -> () {
         // Fill the whole screen with the background color
         renderer.set_draw_color(self.background_color).ok().unwrap();
@@ -182,10 +187,10 @@ impl Map {
             .. top_left
         };
         
-        renderer.copy(&self.background_texture, None, Some(top_left)).ok().unwrap();
-        renderer.copy(&self.background_texture, None, Some(top_right)).ok().unwrap();
-        renderer.copy(&self.background_texture, None, Some(bottom_left)).ok().unwrap();
-        renderer.copy(&self.background_texture, None, Some(bottom_right)).ok().unwrap();
+        renderer.copy(self.background_texture, None, Some(top_left)).ok().unwrap();
+        renderer.copy(self.background_texture, None, Some(top_right)).ok().unwrap();
+        renderer.copy(self.background_texture, None, Some(bottom_left)).ok().unwrap();
+        renderer.copy(self.background_texture, None, Some(bottom_right)).ok().unwrap();
     }
 
     fn bound(&self, p: Vec2<i32>) -> Vec2<i32> {
@@ -273,13 +278,13 @@ impl Camera {
 }
 
 #[deriving(PartialEq)]
-struct State {
+struct State<'a> {
     quit: bool,
     accelerating: bool,
     rotating: Rotating,
     time_delta: f64,
-    ship: Ship,
-    map: Map,
+    ship: Ship<'a>,
+    map: Map<'a>,
     camera: Camera,
 }
 
@@ -331,7 +336,7 @@ fn run(renderer: &Renderer, state: &mut State, prev_time0: u32) {
         // Paint the map
         state.map.render(renderer, &state.camera);
         // Paint the ship
-        state.ship.render(renderer, &state.camera);
+        state.ship.render(renderer, state.accelerating, &state.camera);
         // GO
         renderer.present();
 
@@ -356,13 +361,7 @@ fn main() {
     renderer.set_logical_size((SCREEN_WIDTH as int), (SCREEN_HEIGHT as int)).ok().unwrap();
     let planes_surface = sdl2_image::LoadSurface::from_file(&from_str("assets/planes.png").unwrap()).ok().unwrap();
     planes_surface.set_color_key(true, Color::RGB(0xba, 0xfe, 0xca)).ok().unwrap();
-    let planes_texture = renderer.create_texture_from_surface(&planes_surface).ok().unwrap();
-    let ship_sprite = Sprite{
-        texture: planes_texture,
-        rect: Rect{x: 88, y: 96, w: 30, h: 24},
-        center: Point{x: 15, y: 24},
-        angle: 90.,
-    };
+    let planes_texture: &Texture = &renderer.create_texture_from_surface(&planes_surface).ok().unwrap();
     let ship_pos = Vec2 {x: SCREEN_WIDTH / 2, y: SCREEN_HEIGHT / 2};
     let ship = Ship {
         spec : ShipSpec {
@@ -374,7 +373,18 @@ fn main() {
             acceleration: 0.035,
             friction: 0.02,
             gravity: 0.008,
-            sprite: ship_sprite,
+            sprite: Sprite{
+                texture: planes_texture,
+                rect: Rect{x: 128, y: 96, w: 30, h: 24},
+                center: Point{x: 15, y: 24},
+                angle: 90.,
+            },
+            sprite_accelerating: Sprite{
+                texture: planes_texture,
+                rect: Rect{x: 88, y: 96, w: 30, h: 24},
+                center: Point{x: 15, y: 24},
+                angle: 90.,
+            },
         },
         pos: ship_pos,
         speed: Vec2 {x: 0., y: 0.},
@@ -386,7 +396,7 @@ fn main() {
         w: SCREEN_WIDTH*10,
         h: SCREEN_HEIGHT*10,
         background_color: Color::RGB(0x58, 0xB7, 0xFF),
-        background_texture: map_texture,
+        background_texture: &map_texture,
     };
     let mut state = State {
         quit: false,
@@ -398,8 +408,8 @@ fn main() {
         camera: Camera {
             spec: CameraSpec {
                 acceleration: 1.2,
-                h_padding: 300,
-                v_padding: 300 * SCREEN_HEIGHT / SCREEN_WIDTH,
+                h_padding: 220,
+                v_padding: 220 * SCREEN_HEIGHT / SCREEN_WIDTH,
             },
             pos: Vec2{
                 x: ship_pos.x - SCREEN_WIDTH/2,
