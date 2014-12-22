@@ -10,8 +10,8 @@ pub mod vec2;
 // ---------------------------------------------------------------------
 // Constants
 
-static SCREEN_WIDTH: i32 = 1024;
-static SCREEN_HEIGHT: i32 = 576;
+static SCREEN_WIDTH: i32 = 1280;
+static SCREEN_HEIGHT: i32 = 720;
 
 // ---------------------------------------------------------------------
 // Ship
@@ -32,6 +32,7 @@ struct ShipSpec {
     acceleration: f64,
     friction: f64,
     gravity: f64,
+    // edge_repulsion: f64,
 }
 
 #[deriving(PartialEq, Clone, Copy)]
@@ -69,25 +70,13 @@ impl Ship {
         let friction = self.speed * self.spec.friction;
         f = f - friction;
 
-        // Scale based on the time
-        f = f * dt;
-
         // Update speed
         self.speed = self.speed + f;
 
         // Update position
-        self.pos.x += self.speed.x as i32;
-        self.pos.y += self.speed.y as i32;
-        if self.pos.x < 0 {
-            self.pos.x = 0;
-        } else if self.pos.x > map.w {
-            self.pos.x = map.w
-        }
-        if self.pos.y < 0 {
-            self.pos.y = 0;
-        } else if self.pos.y > map.h {
-            self.pos.y = map.h
-        }
+        self.pos.x += (self.speed.x * dt) as i32;
+        self.pos.y += (self.speed.y * dt) as i32;
+        self.pos = map.bound(self.pos);
     }
 
     fn render(&self, renderer: &sdl2::render::Renderer, cam: &Camera) -> () {
@@ -122,8 +111,8 @@ impl Ship {
 struct Map {
     w: i32,
     h: i32,
-    background_color: Color,
-    background_texture: sdl2::render::Texture,
+    background_color: Color, 
+   background_texture: sdl2::render::Texture,
 }
 
 impl Map {
@@ -133,14 +122,14 @@ impl Map {
         renderer.fill_rect(&Rect {x: 0, y: 0, w: SCREEN_WIDTH, h: SCREEN_HEIGHT}).ok().unwrap();
 
         // ┌──────────────────────────────────────────┐
-        // │  cam.pos                                 │
-        // │  ┌─────────────────────┐                 │
-        // │  │                     │                 │
-        // │┄┄│┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄│┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄│
+        // │                  ┊                   ┊   │
+        // │  cam.pos         ┊                   ┊   │
+        // │  ┌─────────────────────┐             ┊   │
+        // │  │               ┊     │             ┊   │
         // │  │             t ┊     │             ┊   │
+        // │┄┄│┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄│┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄│
         // │  │               ┊     │             ┊   │
         // │  └─────────────────────┘             ┊   │
-        // │                  ┊                   ┊   │
         // │                  ┊                   ┊   │
         // └──────────────────────────────────────────┘
 
@@ -149,18 +138,61 @@ impl Map {
         let bgr_h = bgr.height as i32;
         let t = Vec2 {
             x: bgr_w - (cam.pos.x % bgr_w),
-            y: self.h - bgr_h - cam.pos.y, // Might be negative
+            y: bgr_h - (cam.pos.y % bgr_h),
         };
-        let dst_1 = Rect {
+        let top_left = Rect {
             x: t.x - bgr_w,
-            y: t.y,
+            y: t.y - bgr_h,
             w: bgr_w,
             h: bgr_h,
         };
-        let dst_2 = Rect {x: t.x, .. dst_1};
+        let top_right = Rect {
+            x: t.x,
+            y: t.y - bgr_h,
+            .. top_left
+        };
+        let bottom_left = Rect {
+            x: t.x - bgr_w,
+            y: t.y,
+            .. top_left
+        };
+        let bottom_right = Rect {
+            x: t.x,
+            y: t.y,
+            .. top_left
+        };
         
-        renderer.copy(&self.background_texture, None, Some(dst_1)).ok().unwrap();
-        renderer.copy(&self.background_texture, None, Some(dst_2)).ok().unwrap();
+        renderer.copy(&self.background_texture, None, Some(top_left)).ok().unwrap();
+        renderer.copy(&self.background_texture, None, Some(top_right)).ok().unwrap();
+        renderer.copy(&self.background_texture, None, Some(bottom_left)).ok().unwrap();
+        renderer.copy(&self.background_texture, None, Some(bottom_right)).ok().unwrap();
+    }
+
+    fn bound(&self, p: Vec2<i32>) -> Vec2<i32> {
+        // TODO handle points that are badly negative
+        fn f(n: i32, m: i32) -> i32 {
+            if n < 0 {
+                0
+            } else if n > m {
+                m
+            } else {
+                n
+            }
+        };
+        Vec2{ x: f(p.x, self.w), y: f(p.y, self.h) }
+    }
+
+    fn bound_rect(&self, p: Vec2<i32>, w: i32, h: i32) -> Vec2<i32> {
+        fn f(n: i32, edge: i32, m: i32) -> i32 {
+            if n < 0 {
+                0
+            } else if n + edge > m {
+                m - edge
+            } else {
+                n
+            }
+        };
+        Vec2{ x: f(p.x, w, self.w), y: f(p.y, h, self.h) }
     }
 }
 
@@ -178,12 +210,11 @@ struct Camera {
 }
 
 impl Camera {
-    fn new(ship: &Ship, acceleration: f64) -> Camera {
-        let h_padding = (ship.spec.width * 2.) as i32;
+    fn new(ship: &Ship, acceleration: f64, h_padding: i32) -> Camera {
         Camera {
             acceleration: acceleration,
             h_padding: h_padding,
-            v_padding: h_padding * SCREEN_WIDTH / SCREEN_HEIGHT,
+            v_padding: h_padding * SCREEN_HEIGHT / SCREEN_WIDTH,
             pos: Vec2{
                 x: ship.pos.x - SCREEN_WIDTH/2,
                 y: ship.pos.y - SCREEN_HEIGHT/2,
@@ -195,45 +226,41 @@ impl Camera {
         (p - self.pos).point()
     }
 
-    // #[inline(always)]
-    // fn left(&self) -> i32 { self.pos.x }
-    // #[inline(always)]
-    // fn right(&self) -> i32 { self.pos.x + SCREEN_WIDTH }
-    // #[inline(always)]
-    // fn top(&self) -> i32 { self.pos.y }
-    // #[inline(always)]
-    // fn bottom(&self) -> i32 { self.pos.y + SCREEN_HEIGHT }
+    #[inline(always)]
+    fn left(&self) -> i32 { self.pos.x }
+    #[inline(always)]
+    fn right(&self) -> i32 { self.pos.x + SCREEN_WIDTH }
+    #[inline(always)]
+    fn top(&self) -> i32 { self.pos.y }
+    #[inline(always)]
+    fn bottom(&self) -> i32 { self.pos.y + SCREEN_HEIGHT }
 
-    fn advance(&mut self, map: &Map, ship: &Ship, _: f64) {
-        self.pos = ship.pos - Vec2{x: SCREEN_WIDTH/2, y: SCREEN_HEIGHT/2};
-        // // Push the camera based on the ship velocity
-        // let f = ship.speed * self.acceleration * dt;
-        // self.pos.x += f.x as i32;
-        // self.pos.y += f.y as i32;
+    fn advance(&mut self, map: &Map, ship: &Ship, dt: f64) {
+        // Push the camera based on the ship velocity
+        let f = ship.speed * self.acceleration;
+        // // But also centering the player
+        // let target = Vec2{x: ship.pos.x - SCREEN_WIDTH/2, y: ship.pos.y - SCREEN_HEIGHT/2};
+        // let towards = self.pos - target;
+        // let f = f + Vec2{x: towards.x as f64, y: towards.y as f64} * self.chasing_speed;
+        
+        self.pos.x += (f.x * dt) as i32;
+        self.pos.y += (f.y * dt) as i32;
 
-        // // Make sure the ship is not too much to the edge
-        // if self.left() + self.h_padding > ship.pos.x {
-        //     self.pos.x = ship.pos.x - self.h_padding
-        // } else if self.right() - self.h_padding < ship.pos.x {
-        //     self.pos.x = (ship.pos.x + self.h_padding) - SCREEN_WIDTH
-        // }
-        // if self.top() + self.v_padding > ship.pos.y {
-        //     self.pos.y = ship.pos.y - self.v_padding
-        // } else if self.bottom() - self.v_padding < ship.pos.y {
-        //     self.pos.y = (ship.pos.y + self.v_padding) - SCREEN_HEIGHT
-        // }
+
+        // Make sure the ship is not too much to the edge
+        if self.left() + self.h_padding > ship.pos.x {
+            self.pos.x = ship.pos.x - self.h_padding
+        } else if self.right() - self.h_padding < ship.pos.x {
+            self.pos.x = (ship.pos.x + self.h_padding) - SCREEN_WIDTH
+        }
+        if self.top() + self.v_padding > ship.pos.y {
+            self.pos.y = ship.pos.y - self.v_padding
+        } else if self.bottom() - self.v_padding < ship.pos.y {
+            self.pos.y = (ship.pos.y + self.v_padding) - SCREEN_HEIGHT
+        }
 
         // Make sure it stays in the map
-        if self.pos.x < 0 {
-            self.pos.x = 0
-        } else if self.pos.x > map.w - SCREEN_WIDTH {
-            self.pos.x = map.w - SCREEN_WIDTH
-        }
-        if self.pos.y < 0 {
-            self.pos.y = 0
-        } else if self.pos.y > map.h - SCREEN_HEIGHT {
-            self.pos.y = map.h - SCREEN_HEIGHT
-        }
+        self.pos = map.bound_rect(self.pos, SCREEN_WIDTH, SCREEN_HEIGHT);
     }
 }
 
@@ -304,6 +331,9 @@ fn run(renderer: &sdl2::render::Renderer, state: &mut State, prev_time0: u32) {
             break;
         }
         prev_time = time_now;
+
+        println!("Ship position: {}", state.ship.pos);
+        println!("Camera position: {}", state.camera.pos);
     }
 }
 
@@ -322,11 +352,11 @@ fn main() {
     let ship = Ship {
         spec : ShipSpec {
             color: Color::RGB(0x00, 0x00, 0x00),
-            height: 50.,
-            width: 40.,
+            height: 30.,
+            width: 20.,
             rotation_speed: 0.005,
-            acceleration: 0.025,
-            friction: 0.001,
+            acceleration: 0.035,
+            friction: 0.02,
             gravity: 0.008,
         },
         pos: Vec2 {x: SCREEN_WIDTH / 2, y: SCREEN_HEIGHT / 2},
@@ -337,8 +367,8 @@ fn main() {
         sdl2::surface::Surface::from_bmp(&from_str("assets/background.bmp").unwrap()).ok().unwrap();
     let map_texture = renderer.create_texture_from_surface(&map_surface).ok().unwrap();
     let map = Map {
-        w: SCREEN_WIDTH*4,
-        h: SCREEN_HEIGHT*3,
+        w: SCREEN_WIDTH*10,
+        h: SCREEN_HEIGHT*10,
         background_color: Color::RGB(0x58, 0xB7, 0xFF),
         background_texture: map_texture,
     };
@@ -349,7 +379,7 @@ fn main() {
         time_delta: 0.,
         ship: ship,
         map: map,
-        camera: Camera::new(&ship, 0.1),
+        camera: Camera::new(&ship, 1.1, 300),
     };
     run(&renderer, &mut state, sdl2::get_ticks());
 }
