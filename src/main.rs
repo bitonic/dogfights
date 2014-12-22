@@ -1,7 +1,10 @@
 extern crate sdl2;
+extern crate sdl2_image;
 
 use sdl2::pixels::Color;
 use sdl2::rect::{Rect, Point};
+use sdl2::SdlResult;
+use sdl2::render::Renderer;
 use std::num::FloatMath;
 use vec2::Vec2;
 
@@ -10,8 +13,33 @@ pub mod vec2;
 // ---------------------------------------------------------------------
 // Constants
 
-static SCREEN_WIDTH: i32 = 1280;
-static SCREEN_HEIGHT: i32 = 720;
+static SCREEN_WIDTH: i32 = 1024;
+static SCREEN_HEIGHT: i32 = 768;
+
+// ---------------------------------------------------------------------
+// Sprites
+
+#[deriving(PartialEq)]
+struct Sprite {
+    texture: sdl2::render::Texture,
+    rect: Rect,
+    center: Point,
+    // If the sprite is already rotated by some angle
+    angle: f64,
+}
+
+impl Sprite {
+    fn render(&self, renderer: &Renderer, rotation: f64, dst: Option<Rect>) -> SdlResult<()> {
+        let dst = match dst {
+            None       => None,
+            Some(rect) => Some(Rect{x: rect.x - self.center.x, y: rect.y - self.center.y, .. rect}),
+        };
+        let angle = rotation * 180./std::f64::consts::PI;
+        renderer.copy_ex(
+            &self.texture, Some(self.rect), dst, self.angle - (-1. * angle),
+            Some(self.center), sdl2::render::RendererFlip::None)
+    }
+}
 
 // ---------------------------------------------------------------------
 // Ship
@@ -23,19 +51,20 @@ enum Rotating {
     Right,
 }
 
-#[deriving(PartialEq, Clone, Copy)]
+#[deriving(PartialEq)]
 struct ShipSpec {
     color: Color,
     height: f64,
     width: f64,
     rotation_speed: f64,
+    rotation_speed_accelerating: f64,
     acceleration: f64,
     friction: f64,
     gravity: f64,
-    // edge_repulsion: f64,
+    sprite: Sprite,
 }
 
-#[deriving(PartialEq, Clone, Copy)]
+#[deriving(PartialEq)]
 struct Ship {
     spec: ShipSpec,
     pos: Vec2<i32>,
@@ -47,7 +76,12 @@ impl Ship {
     fn advance(&mut self, map: &Map, accelerating: bool, rotating: Rotating, dt: f64) -> () {
         // =============================================================
         // Apply the rotation
-        let rotation_delta = dt * self.spec.rotation_speed;
+        let rotation_speed = if accelerating {
+            self.spec.rotation_speed_accelerating
+        } else {
+            self.spec.rotation_speed
+        };
+        let rotation_delta = dt * rotation_speed;
         match rotating {
             Rotating::Still => {},
             Rotating::Left  => self.rotation -= rotation_delta,
@@ -79,28 +113,10 @@ impl Ship {
         self.pos = map.bound(self.pos);
     }
 
-    fn render(&self, renderer: &sdl2::render::Renderer, cam: &Camera) -> () {
-        renderer.set_draw_color(self.spec.color).ok().unwrap();
-
-        let xf = self.pos.x as f64;
-        let yf = self.pos.y as f64;
-        let tip = Vec2 {
-            x: (xf + self.rotation.cos() * self.spec.height) as i32,
-            y: (yf + self.rotation.sin() * self.spec.height) as i32,
-        };
-        let ortogonal = self.rotation + 1.57079633;
-        let base_l = Vec2 {
-            x: (xf + ortogonal.cos() * self.spec.width/2.) as i32,
-            y: (yf + ortogonal.sin() * self.spec.width/2.) as i32,
-        };
-        let base_r = Vec2 {
-            x: (xf - ortogonal.cos() * self.spec.width/2.) as i32,
-            y: (yf - ortogonal.sin() * self.spec.width/2.) as i32,
-        };
-
-        renderer.draw_line(cam.adjust(tip), cam.adjust(base_l)).ok().unwrap();
-        renderer.draw_line(cam.adjust(tip), cam.adjust(base_r)).ok().unwrap();
-        renderer.draw_line(cam.adjust(base_l), cam.adjust(base_r)).ok().unwrap();
+    fn render(&self, renderer: &Renderer, cam: &Camera) -> () {
+        let pos = cam.adjust(self.pos);
+        let dst = Rect{x: pos.x, y: pos.y, .. self.spec.sprite.rect};
+        self.spec.sprite.render(renderer, self.rotation, Some(dst)).ok().unwrap()
     }
 }
 
@@ -112,11 +128,11 @@ struct Map {
     w: i32,
     h: i32,
     background_color: Color, 
-   background_texture: sdl2::render::Texture,
+    background_texture: sdl2::render::Texture,
 }
 
 impl Map {
-    fn render(&self, renderer: &sdl2::render::Renderer, cam: &Camera) -> () {
+    fn render(&self, renderer: &Renderer, cam: &Camera) -> () {
         // Fill the whole screen with the background color
         renderer.set_draw_color(self.background_color).ok().unwrap();
         renderer.fill_rect(&Rect {x: 0, y: 0, w: SCREEN_WIDTH, h: SCREEN_HEIGHT}).ok().unwrap();
@@ -179,7 +195,7 @@ impl Map {
                 n
             }
         };
-        Vec2{ x: f(p.x, self.w), y: f(p.y, self.h) }
+        Vec2{x: f(p.x, self.w), y: f(p.y, self.h)}
     }
 
     fn bound_rect(&self, p: Vec2<i32>, w: i32, h: i32) -> Vec2<i32> {
@@ -192,7 +208,7 @@ impl Map {
                 n
             }
         };
-        Vec2{ x: f(p.x, w, self.w), y: f(p.y, h, self.h) }
+        Vec2{x: f(p.x, w, self.w), y: f(p.y, h, self.h)}
     }
 }
 
@@ -200,28 +216,21 @@ impl Map {
 // Main
 
 #[deriving(PartialEq, Clone, Show, Copy)]
-struct Camera {
+struct CameraSpec {
     acceleration: f64,
     // The minimum distance from the top/bottom edges to the ship
     v_padding: i32,
     // The minimum distance from the left/right edges to the ship
     h_padding: i32,
+}
+
+#[deriving(PartialEq, Clone, Show, Copy)]
+struct Camera {
+    spec: CameraSpec,
     pos: Vec2<i32>,
 }
 
 impl Camera {
-    fn new(ship: &Ship, acceleration: f64, h_padding: i32) -> Camera {
-        Camera {
-            acceleration: acceleration,
-            h_padding: h_padding,
-            v_padding: h_padding * SCREEN_HEIGHT / SCREEN_WIDTH,
-            pos: Vec2{
-                x: ship.pos.x - SCREEN_WIDTH/2,
-                y: ship.pos.y - SCREEN_HEIGHT/2,
-            }
-        }
-    }
-
     fn adjust(&self, p: Vec2<i32>) -> Point {
         (p - self.pos).point()
     }
@@ -237,7 +246,7 @@ impl Camera {
 
     fn advance(&mut self, map: &Map, ship: &Ship, dt: f64) {
         // Push the camera based on the ship velocity
-        let f = ship.speed * self.acceleration;
+        let f = ship.speed * self.spec.acceleration;
         // // But also centering the player
         // let target = Vec2{x: ship.pos.x - SCREEN_WIDTH/2, y: ship.pos.y - SCREEN_HEIGHT/2};
         // let towards = self.pos - target;
@@ -248,15 +257,15 @@ impl Camera {
 
 
         // Make sure the ship is not too much to the edge
-        if self.left() + self.h_padding > ship.pos.x {
-            self.pos.x = ship.pos.x - self.h_padding
-        } else if self.right() - self.h_padding < ship.pos.x {
-            self.pos.x = (ship.pos.x + self.h_padding) - SCREEN_WIDTH
+        if self.left() + self.spec.h_padding > ship.pos.x {
+            self.pos.x = ship.pos.x - self.spec.h_padding
+        } else if self.right() - self.spec.h_padding < ship.pos.x {
+            self.pos.x = (ship.pos.x + self.spec.h_padding) - SCREEN_WIDTH
         }
-        if self.top() + self.v_padding > ship.pos.y {
-            self.pos.y = ship.pos.y - self.v_padding
-        } else if self.bottom() - self.v_padding < ship.pos.y {
-            self.pos.y = (ship.pos.y + self.v_padding) - SCREEN_HEIGHT
+        if self.top() + self.spec.v_padding > ship.pos.y {
+            self.pos.y = ship.pos.y - self.spec.v_padding
+        } else if self.bottom() - self.spec.v_padding < ship.pos.y {
+            self.pos.y = (ship.pos.y + self.spec.v_padding) - SCREEN_HEIGHT
         }
 
         // Make sure it stays in the map
@@ -307,7 +316,7 @@ fn process_events(state: &mut State) -> () {
     }
 }
 
-fn run(renderer: &sdl2::render::Renderer, state: &mut State, prev_time0: u32) {
+fn run(renderer: &Renderer, state: &mut State, prev_time0: u32) {
     let mut prev_time = prev_time0;
     loop {
         let time_now = sdl2::get_ticks();
@@ -331,9 +340,6 @@ fn run(renderer: &sdl2::render::Renderer, state: &mut State, prev_time0: u32) {
             break;
         }
         prev_time = time_now;
-
-        println!("Ship position: {}", state.ship.pos);
-        println!("Camera position: {}", state.camera.pos);
     }
 }
 
@@ -344,27 +350,40 @@ fn main() {
         sdl2::video::WindowPos::PosUndefined, sdl2::video::WindowPos::PosUndefined,
         (SCREEN_WIDTH as int), (SCREEN_HEIGHT as int),
         sdl2::video::SHOWN).ok().unwrap();
-    let renderer = sdl2::render::Renderer::from_window(
+    let renderer = Renderer::from_window(
         window,
         sdl2::render::RenderDriverIndex::Auto,
         sdl2::render::ACCELERATED | sdl2::render::PRESENTVSYNC).ok().unwrap();
     renderer.set_logical_size((SCREEN_WIDTH as int), (SCREEN_HEIGHT as int)).ok().unwrap();
+    let planes_surface = sdl2_image::LoadSurface::from_file(&from_str("assets/planes.png").unwrap()).ok().unwrap();
+    planes_surface.set_color_key(true, Color::RGB(0xba, 0xfe, 0xca)).ok().unwrap();
+    let planes_texture = renderer.create_texture_from_surface(&planes_surface).ok().unwrap();
+    let ship_sprite = Sprite{
+        texture: planes_texture,
+        rect: Rect{x: 88, y: 96, w: 30, h: 24},
+        center: Point{x: 15, y: 24},
+        angle: 90.,
+    };
+    let ship_pos = Vec2 {x: SCREEN_WIDTH / 2, y: SCREEN_HEIGHT / 2};
     let ship = Ship {
         spec : ShipSpec {
             color: Color::RGB(0x00, 0x00, 0x00),
             height: 30.,
             width: 20.,
-            rotation_speed: 0.005,
+            rotation_speed: 0.007,
+            rotation_speed_accelerating: 0.002,
             acceleration: 0.035,
             friction: 0.02,
             gravity: 0.008,
+            sprite: ship_sprite,
         },
-        pos: Vec2 {x: SCREEN_WIDTH / 2, y: SCREEN_HEIGHT / 2},
+        pos: ship_pos,
         speed: Vec2 {x: 0., y: 0.},
         rotation: 0.,
     };
-    let map_surface =
-        sdl2::surface::Surface::from_bmp(&from_str("assets/background.bmp").unwrap()).ok().unwrap();
+    // let map_surface = surface_from_png(&from_str("assets/background.png").unwrap()).ok().unwrap();
+    // let map_surface = sdl2::surface::Surface::from_bmp(&from_str("assets/background.bmp").unwrap()).ok().unwrap();
+    let map_surface = sdl2_image::LoadSurface::from_file(&from_str("assets/background.png").unwrap()).ok().unwrap();
     let map_texture = renderer.create_texture_from_surface(&map_surface).ok().unwrap();
     let map = Map {
         w: SCREEN_WIDTH*10,
@@ -379,7 +398,17 @@ fn main() {
         time_delta: 0.,
         ship: ship,
         map: map,
-        camera: Camera::new(&ship, 1.1, 300),
+        camera: Camera {
+            spec: CameraSpec {
+                acceleration: 1.2,
+                h_padding: 300,
+                v_padding: 300 * SCREEN_HEIGHT / SCREEN_WIDTH,
+            },
+            pos: Vec2{
+                x: ship_pos.x - SCREEN_WIDTH/2,
+                y: ship_pos.y - SCREEN_HEIGHT/2,
+            }
+        }
     };
     run(&renderer, &mut state, sdl2::get_ticks());
 }
