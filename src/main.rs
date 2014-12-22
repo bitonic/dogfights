@@ -345,7 +345,7 @@ fn run(renderer: &Renderer, state: &mut State, prev_time0: u32) {
 fn main() {
     sdl2::init(sdl2::INIT_VIDEO);      // TODO add expect
     let window = sdl2::video::Window::new(
-        "Asteroidi",
+        "Dogfights",
         sdl2::video::WindowPos::PosUndefined, sdl2::video::WindowPos::PosUndefined,
         (SCREEN_WIDTH as int), (SCREEN_HEIGHT as int),
         sdl2::video::SHOWN).ok().unwrap();
