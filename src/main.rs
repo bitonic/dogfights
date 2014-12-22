@@ -137,9 +137,13 @@ impl Map {
         renderer.set_draw_color(self.background_color).ok().unwrap();
         renderer.fill_rect(&Rect {x: 0, y: 0, w: SCREEN_WIDTH, h: SCREEN_HEIGHT}).ok().unwrap();
 
+        // Fill with the background texture.  The assumption is that 4
+        // background images are needed to cover the entire screen:
+        // 
+        // map
         // ┌──────────────────────────────────────────┐
         // │                  ┊                   ┊   │
-        // │  cam.pos         ┊                   ┊   │
+        // │  cam             ┊                   ┊   │
         // │  ┌─────────────────────┐             ┊   │
         // │  │               ┊     │             ┊   │
         // │  │             t ┊     │             ┊   │
@@ -247,14 +251,9 @@ impl Camera {
     fn advance(&mut self, map: &Map, ship: &Ship, dt: f64) {
         // Push the camera based on the ship velocity
         let f = ship.speed * self.spec.acceleration;
-        // // But also centering the player
-        // let target = Vec2{x: ship.pos.x - SCREEN_WIDTH/2, y: ship.pos.y - SCREEN_HEIGHT/2};
-        // let towards = self.pos - target;
-        // let f = f + Vec2{x: towards.x as f64, y: towards.y as f64} * self.chasing_speed;
         
         self.pos.x += (f.x * dt) as i32;
         self.pos.y += (f.y * dt) as i32;
-
 
         // Make sure the ship is not too much to the edge
         if self.left() + self.spec.h_padding > ship.pos.x {
@@ -381,8 +380,6 @@ fn main() {
         speed: Vec2 {x: 0., y: 0.},
         rotation: 0.,
     };
-    // let map_surface = surface_from_png(&from_str("assets/background.png").unwrap()).ok().unwrap();
-    // let map_surface = sdl2::surface::Surface::from_bmp(&from_str("assets/background.bmp").unwrap()).ok().unwrap();
     let map_surface = sdl2_image::LoadSurface::from_file(&from_str("assets/background.png").unwrap()).ok().unwrap();
     let map_texture = renderer.create_texture_from_surface(&map_surface).ok().unwrap();
     let map = Map {
