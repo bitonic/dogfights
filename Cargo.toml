@@ -10,4 +10,3 @@ name = "asteroidi"
 
 [dependencies.sdl2]
 path = "/home/bitonic/src/rust-sdl2"
-branch = "macro-semicolons"

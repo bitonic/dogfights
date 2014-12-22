@@ -23,7 +23,7 @@ enum Rotating {
     Right,
 }
 
-#[deriving(PartialEq, Clone, Show, Copy)]
+#[deriving(PartialEq, Clone, Copy)]
 struct ShipSpec {
     color: Color,
     height: f64,
@@ -34,7 +34,7 @@ struct ShipSpec {
     gravity: f64,
 }
 
-#[deriving(PartialEq, Clone, Show, Copy)]
+#[deriving(PartialEq, Clone, Copy)]
 struct Ship {
     spec: ShipSpec,
     pos: Vec2<i32>,
@@ -118,15 +118,49 @@ impl Ship {
 // ---------------------------------------------------------------------
 // Maps
 
-#[deriving(PartialEq, Clone, Show, Copy)]
+#[deriving(PartialEq)]
 struct Map {
     w: i32,
-    h: i32
+    h: i32,
+    background_color: Color,
+    background_texture: sdl2::render::Texture,
 }
 
 impl Map {
-    fn render(&self, _: &sdl2::render::Renderer, _: &Camera) -> () {
+    fn render(&self, renderer: &sdl2::render::Renderer, cam: &Camera) -> () {
+        // Fill the whole screen with the background color
+        renderer.set_draw_color(self.background_color).ok().unwrap();
+        renderer.fill_rect(&Rect {x: 0, y: 0, w: SCREEN_WIDTH, h: SCREEN_HEIGHT}).ok().unwrap();
+
+        // ┌──────────────────────────────────────────┐
+        // │  cam.pos                                 │
+        // │  ┌─────────────────────┐                 │
+        // │  │                     │                 │
+        // │┄┄│┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄│┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄│
+        // │  │             t ┊     │             ┊   │
+        // │  │               ┊     │             ┊   │
+        // │  └─────────────────────┘             ┊   │
+        // │                  ┊                   ┊   │
+        // │                  ┊                   ┊   │
+        // └──────────────────────────────────────────┘
+
+        let bgr = self.background_texture.query().ok().unwrap();
+        let bgr_w = bgr.width as i32;
+        let bgr_h = bgr.height as i32;
+        let t = Vec2 {
+            x: bgr_w - (cam.pos.x % bgr_w),
+            y: self.h - bgr_h - cam.pos.y, // Might be negative
+        };
+        let dst_1 = Rect {
+            x: t.x - bgr_w,
+            y: t.y,
+            w: bgr_w,
+            h: bgr_h,
+        };
+        let dst_2 = Rect {x: t.x, .. dst_1};
         
+        renderer.copy(&self.background_texture, None, Some(dst_1)).ok().unwrap();
+        renderer.copy(&self.background_texture, None, Some(dst_2)).ok().unwrap();
     }
 }
 
@@ -136,19 +170,60 @@ impl Map {
 #[deriving(PartialEq, Clone, Show, Copy)]
 struct Camera {
     acceleration: f64,
+    // The minimum distance from the top/bottom edges to the ship
+    v_padding: i32,
+    // The minimum distance from the left/right edges to the ship
+    h_padding: i32,
     pos: Vec2<i32>,
 }
 
 impl Camera {
+    fn new(ship: &Ship, acceleration: f64) -> Camera {
+        let h_padding = (ship.spec.width * 2.) as i32;
+        Camera {
+            acceleration: acceleration,
+            h_padding: h_padding,
+            v_padding: h_padding * SCREEN_WIDTH / SCREEN_HEIGHT,
+            pos: Vec2{
+                x: ship.pos.x - SCREEN_WIDTH/2,
+                y: ship.pos.y - SCREEN_HEIGHT/2,
+            }
+        }
+    }
+
     fn adjust(&self, p: Vec2<i32>) -> Point {
         (p - self.pos).point()
     }
 
-    fn advance(&mut self, map: &Map, ship: &Ship, _: f64) {
-        // Just center the ship
-        self.pos = ship.pos - Vec2{x : SCREEN_WIDTH/2, y: SCREEN_HEIGHT/2};
+    // #[inline(always)]
+    // fn left(&self) -> i32 { self.pos.x }
+    // #[inline(always)]
+    // fn right(&self) -> i32 { self.pos.x + SCREEN_WIDTH }
+    // #[inline(always)]
+    // fn top(&self) -> i32 { self.pos.y }
+    // #[inline(always)]
+    // fn bottom(&self) -> i32 { self.pos.y + SCREEN_HEIGHT }
 
-        // Make sure it stays in
+    fn advance(&mut self, map: &Map, ship: &Ship, _: f64) {
+        self.pos = ship.pos - Vec2{x: SCREEN_WIDTH/2, y: SCREEN_HEIGHT/2};
+        // // Push the camera based on the ship velocity
+        // let f = ship.speed * self.acceleration * dt;
+        // self.pos.x += f.x as i32;
+        // self.pos.y += f.y as i32;
+
+        // // Make sure the ship is not too much to the edge
+        // if self.left() + self.h_padding > ship.pos.x {
+        //     self.pos.x = ship.pos.x - self.h_padding
+        // } else if self.right() - self.h_padding < ship.pos.x {
+        //     self.pos.x = (ship.pos.x + self.h_padding) - SCREEN_WIDTH
+        // }
+        // if self.top() + self.v_padding > ship.pos.y {
+        //     self.pos.y = ship.pos.y - self.v_padding
+        // } else if self.bottom() - self.v_padding < ship.pos.y {
+        //     self.pos.y = (ship.pos.y + self.v_padding) - SCREEN_HEIGHT
+        // }
+
+        // Make sure it stays in the map
         if self.pos.x < 0 {
             self.pos.x = 0
         } else if self.pos.x > map.w - SCREEN_WIDTH {
@@ -162,7 +237,7 @@ impl Camera {
     }
 }
 
-#[deriving(PartialEq, Clone, Show, Copy)]
+#[deriving(PartialEq)]
 struct State {
     quit: bool,
     accelerating: bool,
@@ -218,9 +293,6 @@ fn run(renderer: &sdl2::render::Renderer, state: &mut State, prev_time0: u32) {
         // Paint the background for the whole thing
         renderer.set_draw_color(Color::RGB(0x00, 0x00, 0x00)).ok().unwrap();
         renderer.clear().ok().unwrap();
-        // Paint the actual background, so that we get black bars
-        renderer.set_draw_color(Color::RGB(0xFF, 0xFF, 0xFF)).ok().unwrap();
-        renderer.fill_rect(&Rect {x: 0, y: 0, w: SCREEN_WIDTH, h: SCREEN_HEIGHT}).ok().unwrap();
         // Paint the map
         state.map.render(renderer, &state.camera);
         // Paint the ship
@@ -261,14 +333,23 @@ fn main() {
         speed: Vec2 {x: 0., y: 0.},
         rotation: 0.,
     };
+    let map_surface =
+        sdl2::surface::Surface::from_bmp(&from_str("assets/background.bmp").unwrap()).ok().unwrap();
+    let map_texture = renderer.create_texture_from_surface(&map_surface).ok().unwrap();
+    let map = Map {
+        w: SCREEN_WIDTH*4,
+        h: SCREEN_HEIGHT*3,
+        background_color: Color::RGB(0x58, 0xB7, 0xFF),
+        background_texture: map_texture,
+    };
     let mut state = State {
         quit: false,
         accelerating: false,
         rotating: Rotating::Still,
         time_delta: 0.,
         ship: ship,
-        map: Map {w: SCREEN_WIDTH*4, h: SCREEN_HEIGHT*3},
-        camera: Camera{acceleration: 0.1, pos: Vec2{x: 0, y: 0}},
+        map: map,
+        camera: Camera::new(&ship, 0.1),
     };
     run(&renderer, &mut state, sdl2::get_ticks());
 }
