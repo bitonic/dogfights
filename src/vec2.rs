@@ -1,4 +1,5 @@
 use sdl2::rect::Point;
+use std::num::FloatMath;
 
 #[deriving(PartialEq, Clone, Show, Copy)]
 pub struct Vec2<T> {
@@ -25,7 +26,7 @@ impl<T: Copy + Mul<T, T>> Mul<T, Vec2<T>> for Vec2<T> {
 }
 
 impl Vec2<i32> {
-    pub fn point(self) -> Point {
+    pub fn point(&self) -> Point {
         Point{x: self.x, y: self.y}
     }
 }
