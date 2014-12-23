@@ -17,6 +17,20 @@ static SCREEN_WIDTH: i32 = 800;
 static SCREEN_HEIGHT: i32 = 600;
 
 // ---------------------------------------------------------------------
+// Utils
+
+#[inline(always)]
+fn to_radians(x: f64) -> f64 {
+    x * std::f64::consts::PI/180.
+}
+
+#[inline(always)]
+fn from_radians(x: f64) -> f64 {
+    x * 180./std::f64::consts::PI
+}
+
+
+// ---------------------------------------------------------------------
 // Sprites
 
 #[deriving(PartialEq, Clone, Copy)]
@@ -43,7 +57,7 @@ impl<'tx> Sprite<'tx> {
             None       => None,
             Some(rect) => Some(Rect{x: rect.x - self.center.x, y: rect.y - self.center.y, .. rect}),
         };
-        let angle = rotation * 180./std::f64::consts::PI;
+        let angle = from_radians(rotation);
         renderer.copy_ex(
             self.texture, Some(self.rect), dst, self.angle - (-1. * angle),
             Some(self.center), sdl2::render::RendererFlip::None)
@@ -124,15 +138,7 @@ impl<'tx> Ship<'tx> {
 
         // =============================================================
         // Advance the bullets
-        let mut bullets = Vec::with_capacity(self.bullets.len());
-        for bullet in self.bullets.iter() {
-            let new_bullet = bullet.advance(dt);
-            if new_bullet.active(map) {
-                bullets.push(new_bullet)
-            }
-        }
-        self.bullets = bullets;
-
+        self.bullets = Bullet::advance_bullets(&self.bullets, map, dt);
 
         // =============================================================
         // Add new bullet
@@ -193,7 +199,18 @@ impl<'tx> Bullet<'tx> {
         Bullet {pos: pos, rotation: self.rotation, age: self.age + dt, spec: self.spec}
     }
 
-    fn active(&self, map: &Map) -> bool {
+    fn advance_bullets(bullets: &Vec<Bullet<'tx>>, map: &Map, dt: f64) -> Vec<Bullet<'tx>> {
+        let mut new_bullets = Vec::with_capacity(bullets.len() + 1);
+        for bullet in bullets.iter() {
+            let new_bullet = bullet.advance(dt);
+            if new_bullet.alive(map) {
+                new_bullets.push(new_bullet)
+            }
+        };
+        new_bullets
+    }
+
+    fn alive(&self, map: &Map) -> bool {
         self.pos.x >= 0 && self.pos.x <= map.w &&
             self.pos.y >= 0 && self.pos.y <= map.h &&
             self.age < self.spec.lifetime
@@ -203,6 +220,49 @@ impl<'tx> Bullet<'tx> {
         let pos = cam.adjust(self.pos);
         let dst = Rect{x: pos.x, y: pos.y, .. self.spec.sprite.rect};
         self.spec.sprite.render(renderer, self.rotation, Some(dst)).ok().unwrap()
+    }
+}
+
+// ---------------------------------------------------------------------
+// Shooter
+
+struct ShooterSpec<'tx> {
+    sprite: Sprite<'tx>,
+    pos: Vec2<i32>,
+    rotation: f64,
+    bullet_spec: BulletSpec<'tx>,
+    firing_rate: f64,
+}
+
+struct Shooter<'tx> {
+    spec: ShooterSpec<'tx>,
+    time_since_fire: f64,
+    bullets: Vec<Bullet<'tx>>,
+}
+
+impl<'tx> Shooter<'tx> {
+    fn advance(&mut self, map: &Map, dt: f64) {
+        self.bullets = Bullet::advance_bullets(&self.bullets, map, dt);
+        self.time_since_fire += dt;
+        if self.time_since_fire > self.spec.firing_rate {
+            self.time_since_fire = 0.;
+            let bullet = Bullet {
+                spec: self.spec.bullet_spec,
+                pos: self.spec.pos,
+                rotation: self.spec.rotation,
+                age: 0.,
+            };
+            self.bullets.push(bullet);
+        }            
+    }
+
+    fn render(&self, renderer: &Renderer, cam: &Camera) -> () {
+        let pos = cam.adjust(self.spec.pos);
+        let dst = Rect{x: pos.x, y: pos.y, .. self.spec.sprite.rect};
+        self.spec.sprite.render(renderer, self.spec.rotation, Some(dst)).ok().unwrap();
+        for bullet in self.bullets.iter() {
+            bullet.render(renderer, cam);
+        }
     }
 }
 
@@ -367,6 +427,7 @@ struct State<'tx> {
     ship: Ship<'tx>,
     map: Map<'tx>,
     camera: Camera,
+    shooters: Vec<Shooter<'tx>>,
 }
 
 impl<'tx> State<'tx> {
@@ -423,6 +484,9 @@ impl<'tx> State<'tx> {
         };
 
         self.ship.advance(&self.map, self.accelerating, firing, self.rotating, dt);
+        for i in range(0, self.shooters.len()) {
+            self.shooters[i].advance(&self.map, dt);
+        }
         self.camera.advance(&self.map, &self.ship, dt);
     }
 
@@ -434,6 +498,10 @@ impl<'tx> State<'tx> {
         self.map.render(renderer, &self.camera);
         // Paint the ship
         self.ship.render(renderer, self.accelerating, &self.camera);
+        // Paint the shooters
+        for shooter in self.shooters.iter() {
+            shooter.render(renderer, &self.camera);
+        }
         // GO
         renderer.present();
     }
@@ -468,6 +536,16 @@ fn main() {
     let planes_surface = sdl2_image::LoadSurface::from_file(&from_str("assets/planes.png").unwrap()).ok().unwrap();
     planes_surface.set_color_key(true, Color::RGB(0xba, 0xfe, 0xca)).ok().unwrap();
     let planes_texture: &Texture = &renderer.create_texture_from_surface(&planes_surface).ok().unwrap();
+    let bullet_spec = BulletSpec {
+        sprite: Sprite {
+            texture: planes_texture,
+            rect: Rect{x: 424, y: 140, w: 3, h: 12},
+            center: Point{x: 1, y: 6},
+            angle: 90.,
+        },
+        speed: 1.,
+        lifetime: 5000.,
+    };
     let ship_pos = Vec2 {x: SCREEN_WIDTH / 2, y: SCREEN_HEIGHT / 2};
     let ship = Ship {
         spec : ShipSpec {
@@ -488,16 +566,7 @@ fn main() {
                 center: Point{x: 15, y: 24},
                 angle: 90.,
             },
-            bullet_spec: BulletSpec {
-                sprite: Sprite {
-                    texture: planes_texture,
-                    rect: Rect{x: 424, y: 140, w: 3, h: 12},
-                    center: Point{x: 1, y: 6},
-                    angle: 90.,
-                },
-                speed: 1.,
-                lifetime: 5000.,
-            },
+            bullet_spec: bullet_spec,
             firing_interval: 1000,
         },
         pos: ship_pos,
@@ -532,6 +601,24 @@ fn main() {
                 y: ship_pos.y - SCREEN_HEIGHT/2,
             }
         },
+        shooters: vec![
+            Shooter {
+                spec: ShooterSpec {
+                    sprite: Sprite {
+                        texture: planes_texture,
+                        rect: Rect{x: 48, y: 248, w: 32, h: 24},
+                        center: Point{x: 16, y: 12},
+                        angle: 90.,
+                    },
+                    pos: Vec2{x: 1000, y: 200},
+                    rotation: to_radians(90.),
+                    bullet_spec: bullet_spec,
+                    firing_rate: 2000.,
+                },
+                time_since_fire: 0.,
+                bullets: Vec::new(),
+            }
+            ],
     };
     state.run(&renderer);
 }
