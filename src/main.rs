@@ -37,7 +37,7 @@ fn from_radians(x: f64) -> f64 {
 struct Sprite<'tx> {
     texture: &'tx Texture,
     rect: Rect,
-    center: Point,
+    center: Vec2<i32>,
     // If the sprite is already rotated by some angle
     angle: f64,
 }
@@ -52,15 +52,17 @@ struct Sprite<'tx> {
 // }
 
 impl<'tx> Sprite<'tx> {
-    fn render(&self, renderer: &Renderer, rotation: f64, dst: Option<Rect>) -> SdlResult<()> {
-        let dst = match dst {
-            None       => None,
-            Some(rect) => Some(Rect{x: rect.x - self.center.x, y: rect.y - self.center.y, .. rect}),
+    fn render(&self, renderer: &Renderer, rotation: f64, pos: Vec2<i32>) -> SdlResult<()> {
+        let dst = Rect{
+            x: pos.x - self.center.x,
+            y: pos.y - self.center.y,
+            w: self.rect.w,
+            h: self.rect.h
         };
         let angle = from_radians(rotation);
         renderer.copy_ex(
-            self.texture, Some(self.rect), dst, self.angle - (-1. * angle),
-            Some(self.center), sdl2::render::RendererFlip::None)
+            self.texture, Some(self.rect), Some(dst), self.angle - angle,
+            Some(self.center.point()), sdl2::render::RendererFlip::None)
     }
 }
 
@@ -85,6 +87,7 @@ struct ShipSpec<'tx> {
     sprite_accelerating: Sprite<'tx>,
     bullet_spec: BulletSpec<'tx>,
     firing_interval: u32,
+    shoot_from: Vec2<i32>,
 }
 
 #[deriving(PartialEq, Clone)]
@@ -108,8 +111,8 @@ impl<'tx> Ship<'tx> {
         let rotation_delta = dt * rotation_speed;
         match rotating {
             Rotating::Still => {},
-            Rotating::Left  => self.rotation -= rotation_delta,
-            Rotating::Right => self.rotation += rotation_delta,
+            Rotating::Left  => self.rotation += rotation_delta,
+            Rotating::Right => self.rotation -= rotation_delta,
         }
 
         // =============================================================
@@ -118,7 +121,9 @@ impl<'tx> Ship<'tx> {
         // Acceleration
         if accelerating {
             f.x += self.rotation.cos() * self.spec.acceleration;
-            f.y += self.rotation.sin() * self.spec.acceleration;
+            // The sin is inverted because we push the opposite
+            // direction we're looking at.
+            f.y += -1. * self.rotation.sin() * self.spec.acceleration;
         }
 
         // Gravity
@@ -143,9 +148,10 @@ impl<'tx> Ship<'tx> {
         // =============================================================
         // Add new bullet
         if firing {
+            let shoot_from = self.spec.shoot_from.rotate_i32(Vec2{x: 0, y: 0}, self.rotation);
             let bullet = Bullet {
                 spec: self.spec.bullet_spec,
-                pos: self.pos,
+                pos: self.pos + shoot_from,
                 rotation: self.rotation,
                 age: 0.,
             };
@@ -157,11 +163,10 @@ impl<'tx> Ship<'tx> {
         // =============================================================
         // Render ship
         let pos = cam.adjust(self.pos);
-        let dst = Rect{x: pos.x, y: pos.y, .. self.spec.sprite.rect};
         if accelerating {
-            self.spec.sprite_accelerating.render(renderer, self.rotation, Some(dst)).ok().unwrap()
+            self.spec.sprite_accelerating.render(renderer, self.rotation, pos).ok().unwrap()
         } else {
-            self.spec.sprite.render(renderer, self.rotation, Some(dst)).ok().unwrap()
+            self.spec.sprite.render(renderer, self.rotation, pos).ok().unwrap()
         }
 
         // =============================================================
@@ -194,7 +199,7 @@ impl<'tx> Bullet<'tx> {
     fn advance(&self, dt: f64) -> Bullet<'tx> {
         let pos = Vec2 {
             x: self.pos.x + ((self.spec.speed * self.rotation.cos() * dt) as i32),
-            y: self.pos.y + ((self.spec.speed * self.rotation.sin() * dt) as i32),
+            y: self.pos.y + ((-1. * self.spec.speed * self.rotation.sin() * dt) as i32),
         };
         Bullet {pos: pos, rotation: self.rotation, age: self.age + dt, spec: self.spec}
     }
@@ -218,8 +223,7 @@ impl<'tx> Bullet<'tx> {
 
     fn render(&self, renderer: &Renderer, cam: &Camera) -> () {
         let pos = cam.adjust(self.pos);
-        let dst = Rect{x: pos.x, y: pos.y, .. self.spec.sprite.rect};
-        self.spec.sprite.render(renderer, self.rotation, Some(dst)).ok().unwrap()
+        self.spec.sprite.render(renderer, self.rotation, pos).ok().unwrap()
     }
 }
 
@@ -258,8 +262,7 @@ impl<'tx> Shooter<'tx> {
 
     fn render(&self, renderer: &Renderer, cam: &Camera) -> () {
         let pos = cam.adjust(self.spec.pos);
-        let dst = Rect{x: pos.x, y: pos.y, .. self.spec.sprite.rect};
-        self.spec.sprite.render(renderer, self.spec.rotation, Some(dst)).ok().unwrap();
+        self.spec.sprite.render(renderer, self.spec.rotation, pos).ok().unwrap();
         for bullet in self.bullets.iter() {
             bullet.render(renderer, cam);
         }
@@ -381,8 +384,8 @@ struct Camera {
 }
 
 impl Camera {
-    fn adjust(&self, p: Vec2<i32>) -> Point {
-        (p - self.pos).point()
+    fn adjust(&self, p: Vec2<i32>) -> Vec2<i32> {
+        p - self.pos
     }
 
     #[inline(always)]
@@ -540,7 +543,7 @@ fn main() {
         sprite: Sprite {
             texture: planes_texture,
             rect: Rect{x: 424, y: 140, w: 3, h: 12},
-            center: Point{x: 1, y: 6},
+            center: Vec2{x: 1, y: 6},
             angle: 90.,
         },
         speed: 1.,
@@ -557,17 +560,18 @@ fn main() {
             sprite: Sprite{
                 texture: planes_texture,
                 rect: Rect{x: 128, y: 96, w: 30, h: 24},
-                center: Point{x: 15, y: 24},
+                center: Vec2{x: 15, y: 12},
                 angle: 90.,
             },
             sprite_accelerating: Sprite {
                 texture: planes_texture,
                 rect: Rect{x: 88, y: 96, w: 30, h: 24},
-                center: Point{x: 15, y: 24},
+                center: Vec2{x: 15, y: 12},
                 angle: 90.,
             },
             bullet_spec: bullet_spec,
             firing_interval: 1000,
+            shoot_from: Vec2{x: 18, y: 0},
         },
         pos: ship_pos,
         speed: Vec2 {x: 0., y: 0.},
@@ -607,7 +611,7 @@ fn main() {
                     sprite: Sprite {
                         texture: planes_texture,
                         rect: Rect{x: 48, y: 248, w: 32, h: 24},
-                        center: Point{x: 16, y: 12},
+                        center: Vec2{x: 16, y: 12},
                         angle: 90.,
                     },
                     pos: Vec2{x: 1000, y: 200},

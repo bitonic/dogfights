@@ -29,4 +29,22 @@ impl Vec2<i32> {
     pub fn point(&self) -> Point {
         Point{x: self.x, y: self.y}
     }
+
+    pub fn rotate_i32(self, center: Vec2<i32>, rotation: f64) -> Vec2<i32> {
+        let v = Vec2{x: self.x as f64, y: self.y as f64};
+        let center = Vec2{x: center.x as f64, y: center.y as f64};
+        let v_ = v.rotate(center, rotation);
+        Vec2{x: v_.x as i32, y: v_.y as i32}
+    }
+}
+
+impl Vec2<f64> {
+    pub fn rotate(self, center: Vec2<f64>, rotation: f64) -> Vec2<f64> {
+        let dist_x = self.x - center.x;
+        let dist_y = self.y - center.y;
+        Vec2 {
+            x: center.x + dist_x * rotation.cos() + dist_y * rotation.sin(),
+            y: center.y - dist_x * rotation.sin() + dist_y * rotation.cos(),
+        }
+    }
 }
