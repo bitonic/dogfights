@@ -2,13 +2,12 @@ extern crate sdl2;
 extern crate sdl2_image;
 
 use sdl2::pixels::Color;
-use sdl2::rect::Rect;
 use sdl2::SdlResult;
 use sdl2::render::{Renderer, Texture};
 use std::num::FloatMath;
-use vec2::Vec2;
+use geometry::{Vec2, Rect, Transform};
 
-pub mod vec2;
+pub mod geometry;
 
 // ---------------------------------------------------------------------
 // Constants
@@ -53,71 +52,29 @@ struct Sprite<'a> {
 impl<'a> Sprite<'a> {
     fn render(&self, renderer: &Renderer, trans: &Transform) -> SdlResult<()> {
         let dst = Rect{
-            x: (trans.pos.x - self.center.x) as i32,
-            y: (trans.pos.y - self.center.y) as i32,
+            x: trans.pos.x - self.center.x,
+            y: trans.pos.y - self.center.y,
             w: self.rect.w,
             h: self.rect.h
         };
         let angle = from_radians(trans.rotation);
         renderer.copy_ex(
-            self.texture, Some(self.rect), Some(dst), self.angle - angle,
+            self.texture, Some(self.rect.sdl_rect()), Some(dst.sdl_rect()), self.angle - angle,
             Some(self.center.point()), sdl2::render::RendererFlip::None)
     }
 }
 
+
 // ---------------------------------------------------------------------
-// Boxes
+// Bounding boxes
 
-#[deriving(PartialEq, Clone, Copy)]
-struct Transform {
-    pos: Vec2,
-    rotation: f64,
-}
-
-impl Add<Vec2, Transform> for Transform {
-    fn add(self, other: Vec2) -> Transform {
-        Transform {
-            pos: self.pos + other,
-            rotation: self.rotation
-        }
-    }
-}
-
-impl Sub<Vec2, Transform> for Transform {
-    fn sub(self, other: Vec2) -> Transform {
-        Transform {
-            pos: self.pos - other,
-            rotation: self.rotation
-        }
-    }
-}
-
-// // A convex polygon.
-// struct Poly {
-//     points: Vec<Vec2<i32>>,
+// struct BBox {
+//     rects: Vec<Rect>,
 // }
 
-// struct Polys {
-//     polys: Vec<Poly>,
-// }
-
-// impl Poly {
-//     fn hits(&self, self_t: &Transform, other: &Poly, other_t: &Transform) -> bool {
-//         true
-//     }
-// }
-
-// impl Polys {
-//     fn hits(&self, self_t: &Transform, others: &Polys, others_t: &Transform) -> bool {
-//         let mut hit = false;
-//         for this in self.polys.iter() {
-//             if hit { break };
-//             for other in others.polys.iter() {
-//                 if hit { break };
-//                 hit = this.hits(self_t, other, others_t);
-//             }
-//         }
-//         return hit;
+// impl BBox {
+//     fn overlaps(&self, self_t: &Transform, other: &BBox, other_t: &Transform) -> bool {
+//         false
 //     }
 // }
 
@@ -201,7 +158,7 @@ impl<'a> Ship<'a> {
         // =============================================================
         // Add new bullet
         if firing {
-            let shoot_from = self.spec.shoot_from.rotate(Vec2{x: 0., y: 0.}, self.trans.rotation);
+            let shoot_from = self.spec.shoot_from.rotate(self.trans.rotation);
             let bullet = Bullet {
                 spec: self.spec.bullet_spec,
                 trans: self.trans + shoot_from,
@@ -335,7 +292,10 @@ impl<'a> Map<'a> {
     fn render(&self, renderer: &Renderer, cam: &Camera) -> () {
         // Fill the whole screen with the background color
         renderer.set_draw_color(self.background_color).ok().unwrap();
-        renderer.fill_rect(&Rect {x: 0, y: 0, w: SCREEN_WIDTH as i32, h: SCREEN_HEIGHT as i32}).ok().unwrap();
+        let rect = sdl2::rect::Rect {
+            x: 0, y: 0, w: SCREEN_WIDTH as i32, h: SCREEN_HEIGHT as i32
+        };
+        renderer.fill_rect(&rect).ok().unwrap();
 
         // Fill with the background texture.  The assumption is that 4
         // background images are needed to cover the entire screen:
@@ -376,8 +336,8 @@ impl<'a> Map<'a> {
             x: t.x,
             y: t.y,
         };
-        let to_rect = |p: Vec2| -> Option<Rect> {
-            Some(Rect {
+        let to_rect = |p: Vec2| -> Option<sdl2::rect::Rect> {
+            Some(sdl2::rect::Rect {
                 x: p.x as i32,
                 y: p.y as i32,
                 w: bgr.width as i32,
@@ -595,7 +555,7 @@ fn main() {
     let bullet_spec = &BulletSpec {
         sprite: &Sprite {
             texture: planes_texture,
-            rect: Rect{x: 424, y: 140, w: 3, h: 12},
+            rect: Rect{x: 424., y: 140., w: 3., h: 12.},
             center: Vec2{x: 1., y: 6.},
             angle: 90.,
         },
@@ -612,13 +572,13 @@ fn main() {
             gravity: 0.008,
             sprite: &Sprite{
                 texture: planes_texture,
-                rect: Rect{x: 128, y: 96, w: 30, h: 24},
+                rect: Rect{x: 128., y: 96., w: 30., h: 24.},
                 center: Vec2{x: 15., y: 12.},
                 angle: 90.,
             },
             sprite_accelerating: &Sprite {
                 texture: planes_texture,
-                rect: Rect{x: 88, y: 96, w: 30, h: 24},
+                rect: Rect{x: 88., y: 96., w: 30., h: 24.},
                 center: Vec2{x: 15., y: 12.},
                 angle: 90.,
             },
@@ -644,7 +604,7 @@ fn main() {
     let shooter_spec = &ShooterSpec {
         sprite: &Sprite {
             texture: planes_texture,
-            rect: Rect{x: 48, y: 248, w: 32, h: 24},
+            rect: Rect{x: 48., y: 248., w: 32., h: 24.},
             center: Vec2{x: 16., y: 12.},
             angle: 90.,
         },
