@@ -13,8 +13,8 @@ pub mod vec2;
 // ---------------------------------------------------------------------
 // Constants
 
-static SCREEN_WIDTH: i32 = 800;
-static SCREEN_HEIGHT: i32 = 600;
+static SCREEN_WIDTH: f64 = 800.;
+static SCREEN_HEIGHT: f64 = 600.;
 
 // ---------------------------------------------------------------------
 // Utils
@@ -36,7 +36,7 @@ fn from_radians(x: f64) -> f64 {
 struct Sprite<'a> {
     texture: &'a Texture,
     rect: Rect,
-    center: Vec2<i32>,
+    center: Vec2,
     // If the sprite is already rotated by some angle
     angle: f64,
 }
@@ -53,8 +53,8 @@ struct Sprite<'a> {
 impl<'a> Sprite<'a> {
     fn render(&self, renderer: &Renderer, trans: &Transform) -> SdlResult<()> {
         let dst = Rect{
-            x: trans.pos.x - self.center.x,
-            y: trans.pos.y - self.center.y,
+            x: (trans.pos.x - self.center.x) as i32,
+            y: (trans.pos.y - self.center.y) as i32,
             w: self.rect.w,
             h: self.rect.h
         };
@@ -70,12 +70,12 @@ impl<'a> Sprite<'a> {
 
 #[deriving(PartialEq, Clone, Copy)]
 struct Transform {
-    pos: Vec2<i32>,
+    pos: Vec2,
     rotation: f64,
 }
 
-impl Add<Vec2<i32>, Transform> for Transform {
-    fn add(self, other: Vec2<i32>) -> Transform {
+impl Add<Vec2, Transform> for Transform {
+    fn add(self, other: Vec2) -> Transform {
         Transform {
             pos: self.pos + other,
             rotation: self.rotation
@@ -83,8 +83,8 @@ impl Add<Vec2<i32>, Transform> for Transform {
     }
 }
 
-impl Sub<Vec2<i32>, Transform> for Transform {
-    fn sub(self, other: Vec2<i32>) -> Transform {
+impl Sub<Vec2, Transform> for Transform {
+    fn sub(self, other: Vec2) -> Transform {
         Transform {
             pos: self.pos - other,
             rotation: self.rotation
@@ -142,14 +142,14 @@ struct ShipSpec<'a> {
     sprite_accelerating: &'a Sprite<'a>,
     bullet_spec: &'a BulletSpec<'a>,
     firing_interval: u32,
-    shoot_from: Vec2<i32>,
+    shoot_from: Vec2,
 }
 
 #[deriving(PartialEq, Clone)]
 struct Ship<'a> {
     spec: &'a ShipSpec<'a>,
     trans: Transform,
-    speed: Vec2<f64>,
+    speed: Vec2,
     bullets: Vec<Bullet<'a>>,
 }
 
@@ -191,8 +191,7 @@ impl<'a> Ship<'a> {
         self.speed = self.speed + f;
 
         // Update position
-        self.trans.pos.x += (self.speed.x * dt) as i32;
-        self.trans.pos.y += (self.speed.y * dt) as i32;
+        self.trans.pos = self.trans.pos + self.speed * dt;
         self.trans.pos = map.bound(self.trans.pos);
 
         // =============================================================
@@ -202,7 +201,7 @@ impl<'a> Ship<'a> {
         // =============================================================
         // Add new bullet
         if firing {
-            let shoot_from = self.spec.shoot_from.rotate_i32(Vec2{x: 0, y: 0}, self.trans.rotation);
+            let shoot_from = self.spec.shoot_from.rotate(Vec2{x: 0., y: 0.}, self.trans.rotation);
             let bullet = Bullet {
                 spec: self.spec.bullet_spec,
                 trans: self.trans + shoot_from,
@@ -250,8 +249,8 @@ struct Bullet<'a> {
 impl<'a> Bullet<'a> {
     fn advance(&self, dt: f64) -> Bullet<'a> {
         let pos = Vec2 {
-            x: self.trans.pos.x + ((self.spec.speed * self.trans.rotation.cos() * dt) as i32),
-            y: self.trans.pos.y + ((-1. * self.spec.speed * self.trans.rotation.sin() * dt) as i32),
+            x: self.trans.pos.x + (self.spec.speed * self.trans.rotation.cos() * dt),
+            y: self.trans.pos.y + (-1. * self.spec.speed * self.trans.rotation.sin() * dt),
         };
         Bullet {
             trans: Transform{pos: pos, rotation: self.trans.rotation},
@@ -272,8 +271,8 @@ impl<'a> Bullet<'a> {
     }
 
     fn alive(&self, map: &Map) -> bool {
-        self.trans.pos.x >= 0 && self.trans.pos.x <= map.w &&
-            self.trans.pos.y >= 0 && self.trans.pos.y <= map.h &&
+        self.trans.pos.x >= 0. && self.trans.pos.x <= map.w &&
+            self.trans.pos.y >= 0. && self.trans.pos.y <= map.h &&
             self.age < self.spec.lifetime
     }
 
@@ -326,8 +325,8 @@ impl<'a> Shooter<'a> {
 
 #[deriving(PartialEq, Clone, Copy)]
 struct Map<'a> {
-    w: i32,
-    h: i32,
+    w: f64,
+    h: f64,
     background_color: Color, 
     background_texture: &'a Texture,
 }
@@ -336,7 +335,7 @@ impl<'a> Map<'a> {
     fn render(&self, renderer: &Renderer, cam: &Camera) -> () {
         // Fill the whole screen with the background color
         renderer.set_draw_color(self.background_color).ok().unwrap();
-        renderer.fill_rect(&Rect {x: 0, y: 0, w: SCREEN_WIDTH, h: SCREEN_HEIGHT}).ok().unwrap();
+        renderer.fill_rect(&Rect {x: 0, y: 0, w: SCREEN_WIDTH as i32, h: SCREEN_HEIGHT as i32}).ok().unwrap();
 
         // Fill with the background texture.  The assumption is that 4
         // background images are needed to cover the entire screen:
@@ -355,45 +354,48 @@ impl<'a> Map<'a> {
         // └──────────────────────────────────────────┘
 
         let bgr = self.background_texture.query().ok().unwrap();
-        let bgr_w = bgr.width as i32;
-        let bgr_h = bgr.height as i32;
+        let bgr_w = bgr.width as f64;
+        let bgr_h = bgr.height as f64;
         let t = Vec2 {
             x: bgr_w - (cam.pos.x % bgr_w),
             y: bgr_h - (cam.pos.y % bgr_h),
         };
-        let top_left = Rect {
+        let top_left = Vec2 {
             x: t.x - bgr_w,
             y: t.y - bgr_h,
-            w: bgr_w,
-            h: bgr_h,
         };
-        let top_right = Rect {
+        let top_right = Vec2 {
             x: t.x,
             y: t.y - bgr_h,
-            .. top_left
         };
-        let bottom_left = Rect {
+        let bottom_left = Vec2 {
             x: t.x - bgr_w,
             y: t.y,
-            .. top_left
         };
-        let bottom_right = Rect {
+        let bottom_right = Vec2 {
             x: t.x,
             y: t.y,
-            .. top_left
+        };
+        let to_rect = |p: Vec2| -> Option<Rect> {
+            Some(Rect {
+                x: p.x as i32,
+                y: p.y as i32,
+                w: bgr.width as i32,
+                h: bgr.height as i32,
+            })
         };
         
-        renderer.copy(self.background_texture, None, Some(top_left)).ok().unwrap();
-        renderer.copy(self.background_texture, None, Some(top_right)).ok().unwrap();
-        renderer.copy(self.background_texture, None, Some(bottom_left)).ok().unwrap();
-        renderer.copy(self.background_texture, None, Some(bottom_right)).ok().unwrap();
+        renderer.copy(self.background_texture, None, to_rect(top_left)).ok().unwrap();
+        renderer.copy(self.background_texture, None, to_rect(top_right)).ok().unwrap();
+        renderer.copy(self.background_texture, None, to_rect(bottom_left)).ok().unwrap();
+        renderer.copy(self.background_texture, None, to_rect(bottom_right)).ok().unwrap();
     }
 
-    fn bound(&self, p: Vec2<i32>) -> Vec2<i32> {
+    fn bound(&self, p: Vec2) -> Vec2 {
         // TODO handle points that are badly negative
-        fn f(n: i32, m: i32) -> i32 {
-            if n < 0 {
-                0
+        fn f(n: f64, m: f64) -> f64 {
+            if n < 0. {
+                0.
             } else if n > m {
                 m
             } else {
@@ -403,10 +405,10 @@ impl<'a> Map<'a> {
         Vec2{x: f(p.x, self.w), y: f(p.y, self.h)}
     }
 
-    fn bound_rect(&self, p: Vec2<i32>, w: i32, h: i32) -> Vec2<i32> {
-        fn f(n: i32, edge: i32, m: i32) -> i32 {
-            if n < 0 {
-                0
+    fn bound_rect(&self, p: Vec2, w: f64, h: f64) -> Vec2 {
+        fn f(n: f64, edge: f64, m: f64) -> f64 {
+            if n < 0. {
+                0.
             } else if n + edge > m {
                 m - edge
             } else {
@@ -424,15 +426,15 @@ impl<'a> Map<'a> {
 struct CameraSpec {
     acceleration: f64,
     // The minimum distance from the top/bottom edges to the ship
-    v_padding: i32,
+    v_padding: f64,
     // The minimum distance from the left/right edges to the ship
-    h_padding: i32,
+    h_padding: f64,
 }
 
 #[deriving(PartialEq, Clone, Show, Copy)]
 struct Camera {
     spec: CameraSpec,
-    pos: Vec2<i32>,
+    pos: Vec2,
 }
 
 impl Camera {
@@ -441,20 +443,19 @@ impl Camera {
     }
 
     #[inline(always)]
-    fn left(&self) -> i32 { self.pos.x }
+    fn left(&self) -> f64 { self.pos.x }
     #[inline(always)]
-    fn right(&self) -> i32 { self.pos.x + SCREEN_WIDTH }
+    fn right(&self) -> f64 { self.pos.x + SCREEN_WIDTH }
     #[inline(always)]
-    fn top(&self) -> i32 { self.pos.y }
+    fn top(&self) -> f64 { self.pos.y }
     #[inline(always)]
-    fn bottom(&self) -> i32 { self.pos.y + SCREEN_HEIGHT }
+    fn bottom(&self) -> f64 { self.pos.y + SCREEN_HEIGHT }
 
     fn advance(&mut self, map: &Map, ship: &Ship, dt: f64) {
         // Push the camera based on the ship velocity
         let f = ship.speed * self.spec.acceleration;
         
-        self.pos.x += (f.x * dt) as i32;
-        self.pos.y += (f.y * dt) as i32;
+        self.pos = self.pos + f * dt;
 
         // Make sure the ship is not too much to the edge
         if self.left() + self.spec.h_padding > ship.trans.pos.x {
@@ -595,13 +596,13 @@ fn main() {
         sprite: &Sprite {
             texture: planes_texture,
             rect: Rect{x: 424, y: 140, w: 3, h: 12},
-            center: Vec2{x: 1, y: 6},
+            center: Vec2{x: 1., y: 6.},
             angle: 90.,
         },
         speed: 1.,
         lifetime: 5000.,
     };
-    let ship_pos = Vec2 {x: SCREEN_WIDTH / 2, y: SCREEN_HEIGHT / 2};
+    let ship_pos = Vec2 {x: SCREEN_WIDTH/2., y: SCREEN_HEIGHT/2.};
     let ship = Ship {
         spec: &ShipSpec {
             rotation_speed: 0.01,
@@ -612,18 +613,18 @@ fn main() {
             sprite: &Sprite{
                 texture: planes_texture,
                 rect: Rect{x: 128, y: 96, w: 30, h: 24},
-                center: Vec2{x: 15, y: 12},
+                center: Vec2{x: 15., y: 12.},
                 angle: 90.,
             },
             sprite_accelerating: &Sprite {
                 texture: planes_texture,
                 rect: Rect{x: 88, y: 96, w: 30, h: 24},
-                center: Vec2{x: 15, y: 12},
+                center: Vec2{x: 15., y: 12.},
                 angle: 90.,
             },
             bullet_spec: bullet_spec,
             firing_interval: 1000,
-            shoot_from: Vec2{x: 18, y: 0},
+            shoot_from: Vec2{x: 18., y: 0.},
         },
         trans: Transform {
             pos: ship_pos,
@@ -635,8 +636,8 @@ fn main() {
     let map_surface = sdl2_image::LoadSurface::from_file(&("assets/background.png".parse()).unwrap()).ok().unwrap();
     let map_texture = renderer.create_texture_from_surface(&map_surface).ok().unwrap();
     let map = &Map {
-        w: SCREEN_WIDTH*10,
-        h: SCREEN_HEIGHT*10,
+        w: SCREEN_WIDTH*10.,
+        h: SCREEN_HEIGHT*10.,
         background_color: Color::RGB(0x58, 0xB7, 0xFF),
         background_texture: &map_texture,
     };
@@ -644,11 +645,11 @@ fn main() {
         sprite: &Sprite {
             texture: planes_texture,
             rect: Rect{x: 48, y: 248, w: 32, h: 24},
-            center: Vec2{x: 16, y: 12},
+            center: Vec2{x: 16., y: 12.},
             angle: 90.,
         },
         trans: Transform {
-            pos: Vec2{x: 1000, y: 200},
+            pos: Vec2{x: 1000., y: 200.},
             rotation: to_radians(270.),
         },
         bullet_spec: bullet_spec,
@@ -665,12 +666,12 @@ fn main() {
         camera: Camera {
             spec: CameraSpec {
                 acceleration: 1.2,
-                h_padding: 220,
-                v_padding: 220 * SCREEN_HEIGHT / SCREEN_WIDTH,
+                h_padding: 220.,
+                v_padding: 220. * SCREEN_HEIGHT / SCREEN_WIDTH,
             },
             pos: Vec2{
-                x: ship_pos.x - SCREEN_WIDTH/2,
-                y: ship_pos.y - SCREEN_HEIGHT/2,
+                x: ship_pos.x - SCREEN_WIDTH/2.,
+                y: ship_pos.y - SCREEN_HEIGHT/2.,
             }
         },
         shooters: vec![
