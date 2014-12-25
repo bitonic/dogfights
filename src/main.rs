@@ -120,7 +120,7 @@ struct Ship<'a> {
 }
 
 impl<'a> Ship<'a> {
-    fn advance(&mut self, map: &Map, input: &Input, dt: f64) -> () {
+    fn advance(&mut self, map: &Map, input: &Input, hits: uint, dt: f64) -> () {
         self.not_firing_for += dt;
         let firing = if input.firing && self.not_firing_for >= self.spec.firing_interval {
             self.not_firing_for = 0.;
@@ -182,6 +182,12 @@ impl<'a> Ship<'a> {
                 age: 0.,
             };
             self.bullets.push(bullet);
+        }
+
+        // =============================================================
+        // Decrease health if hit
+        if hits > 0 {
+            println!("Hits: {}", hits);
         }
     }
 
@@ -516,7 +522,17 @@ impl<'a> State<'a> {
     fn advance(&mut self, dt: f64) {
         self.input.process_events();
         if !self.input.paused {
-            self.ship.advance(self.map, &self.input, dt);
+            // Calculate hits
+            let mut hits = 0;
+            for i in range(0, self.shooters.len()) {
+                for bullet in self.shooters[i].bullets.iter() {
+                    if self.ship.spec.bbox.overlaps(&self.ship.trans, bullet.spec.bbox, &bullet.trans) {
+                        hits += 1;
+                    }
+                }
+            }
+            // Advance stuff
+            self.ship.advance(self.map, &self.input, hits, dt);
             for i in range(0, self.shooters.len()) {
                 self.shooters[i].advance(self.map, dt);
             }
