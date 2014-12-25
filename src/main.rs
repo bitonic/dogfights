@@ -5,7 +5,7 @@ use sdl2::pixels::Color;
 use sdl2::SdlResult;
 use sdl2::render::{Renderer, Texture};
 use std::num::FloatMath;
-use geometry::{Vec2, Rect, Transform};
+use geometry::{to_radians, from_radians, Vec2, Rect, Transform};
 
 pub mod geometry;
 
@@ -14,19 +14,6 @@ pub mod geometry;
 
 static SCREEN_WIDTH: f64 = 800.;
 static SCREEN_HEIGHT: f64 = 600.;
-
-// ---------------------------------------------------------------------
-// Utils
-
-#[inline(always)]
-fn to_radians(x: f64) -> f64 {
-    x * std::f64::consts::PI/180.
-}
-
-#[inline(always)]
-fn from_radians(x: f64) -> f64 {
-    x * 180./std::f64::consts::PI
-}
 
 // ---------------------------------------------------------------------
 // Sprites
@@ -52,8 +39,7 @@ struct Sprite<'a> {
 impl<'a> Sprite<'a> {
     fn render(&self, renderer: &Renderer, trans: &Transform) -> SdlResult<()> {
         let dst = Rect{
-            x: trans.pos.x - self.center.x,
-            y: trans.pos.y - self.center.y,
+            pos: trans.pos - self.center,
             w: self.rect.w,
             h: self.rect.h
         };
@@ -68,15 +54,24 @@ impl<'a> Sprite<'a> {
 // ---------------------------------------------------------------------
 // Bounding boxes
 
-// struct BBox {
-//     rects: Vec<Rect>,
-// }
+#[deriving(PartialEq, Clone)]
+struct BBox {
+    rects: Vec<Rect>,
+}
 
-// impl BBox {
-//     fn overlaps(&self, self_t: &Transform, other: &BBox, other_t: &Transform) -> bool {
-//         false
-//     }
-// }
+impl BBox {
+    fn overlaps(&self, self_t: &Transform, other: &BBox, other_t: &Transform) -> bool {
+        let mut overlap = false;
+        for this in self.rects.iter() {
+            if overlap { break };
+            for other in other.rects.iter() {
+                if overlap { break };
+                overlap = this.overlaps(self_t, other, other_t);
+            }
+        }
+        overlap
+    }
+}
 
 // ---------------------------------------------------------------------
 // Ship
@@ -100,6 +95,7 @@ struct ShipSpec<'a> {
     bullet_spec: &'a BulletSpec<'a>,
     firing_interval: u32,
     shoot_from: Vec2,
+    bbox: &'a BBox,
 }
 
 #[deriving(PartialEq, Clone)]
@@ -246,6 +242,7 @@ struct ShooterSpec<'a> {
     trans: Transform,
     bullet_spec: &'a BulletSpec<'a>,
     firing_rate: f64,
+    bbox: &'a BBox,
 }
 
 struct Shooter<'a> {
@@ -555,7 +552,7 @@ fn main() {
     let bullet_spec = &BulletSpec {
         sprite: &Sprite {
             texture: planes_texture,
-            rect: Rect{x: 424., y: 140., w: 3., h: 12.},
+            rect: Rect{pos: Vec2{x: 424., y: 140.}, w: 3., h: 12.},
             center: Vec2{x: 1., y: 6.},
             angle: 90.,
         },
@@ -572,19 +569,24 @@ fn main() {
             gravity: 0.008,
             sprite: &Sprite{
                 texture: planes_texture,
-                rect: Rect{x: 128., y: 96., w: 30., h: 24.},
+                rect: Rect{pos: Vec2{x: 128., y: 96.}, w: 30., h: 24.},
                 center: Vec2{x: 15., y: 12.},
                 angle: 90.,
             },
             sprite_accelerating: &Sprite {
                 texture: planes_texture,
-                rect: Rect{x: 88., y: 96., w: 30., h: 24.},
+                rect: Rect{pos: Vec2{x: 88., y: 96.}, w: 30., h: 24.},
                 center: Vec2{x: 15., y: 12.},
                 angle: 90.,
             },
             bullet_spec: bullet_spec,
             firing_interval: 1000,
             shoot_from: Vec2{x: 18., y: 0.},
+            bbox: &BBox{rects: vec![Rect{
+                pos: Vec2{x: -15., y: -12.},
+                w: 30.,
+                h: 30.
+            }]},
         },
         trans: Transform {
             pos: ship_pos,
@@ -604,7 +606,7 @@ fn main() {
     let shooter_spec = &ShooterSpec {
         sprite: &Sprite {
             texture: planes_texture,
-            rect: Rect{x: 48., y: 248., w: 32., h: 24.},
+            rect: Rect{pos: Vec2{x: 48., y: 248.}, w: 32., h: 24.},
             center: Vec2{x: 16., y: 12.},
             angle: 90.,
         },
@@ -614,6 +616,11 @@ fn main() {
         },
         bullet_spec: bullet_spec,
         firing_rate: 2000.,
+        bbox: &BBox{rects: vec![Rect{
+            pos: Vec2{x: -16., y: -12.},
+            w: 32.,
+            h: 24.
+        }]},
     };
     let mut state = State {
         quit: false,
