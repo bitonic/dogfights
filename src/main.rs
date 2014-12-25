@@ -93,7 +93,7 @@ struct ShipSpec<'a> {
     sprite: &'a Sprite<'a>,
     sprite_accelerating: &'a Sprite<'a>,
     bullet_spec: &'a BulletSpec<'a>,
-    firing_interval: u32,
+    firing_interval: f64,
     shoot_from: Vec2,
     bbox: &'a BBox,
 }
@@ -104,19 +104,28 @@ struct Ship<'a> {
     trans: Transform,
     speed: Vec2,
     bullets: Vec<Bullet<'a>>,
+    not_firing_for: f64,
 }
 
 impl<'a> Ship<'a> {
-    fn advance(&mut self, map: &Map, accelerating: bool, firing: bool, rotating: Rotating, dt: f64) -> () {
+    fn advance(&mut self, map: &Map, input: &Input, dt: f64) -> () {
+        self.not_firing_for += dt;
+        let firing = if input.firing && self.not_firing_for >= self.spec.firing_interval {
+            self.not_firing_for = 0.;
+            true
+        } else {
+            false
+        };
+
         // =============================================================
         // Apply the rotation
-        let rotation_speed = if accelerating {
+        let rotation_speed = if input.accelerating {
             self.spec.rotation_speed_accelerating
         } else {
             self.spec.rotation_speed
         };
         let rotation_delta = dt * rotation_speed;
-        match rotating {
+        match input.rotating {
             Rotating::Still => {},
             Rotating::Left  => self.trans.rotation += rotation_delta,
             Rotating::Right => self.trans.rotation -= rotation_delta,
@@ -126,7 +135,7 @@ impl<'a> Ship<'a> {
         // Apply the force
         let mut f = Vec2 {x : 0., y: 0.};
         // Acceleration
-        if accelerating {
+        if input.accelerating {
             f.x += self.trans.rotation.cos() * self.spec.acceleration;
             // The sin is inverted because we push the opposite
             // direction we're looking at.
@@ -164,11 +173,11 @@ impl<'a> Ship<'a> {
         }
     }
 
-    fn render(&self, renderer: &Renderer, accelerating: bool, cam: &Camera) -> () {
+    fn render(&self, renderer: &Renderer, input: &Input, cam: &Camera) -> () {
         // =============================================================
         // Render ship
         let trans = cam.adjust(&self.trans);
-        if accelerating {
+        if input.accelerating {
             self.spec.sprite_accelerating.render(renderer, &trans).ok().unwrap()
         } else {
             self.spec.sprite.render(renderer, &trans).ok().unwrap()
@@ -431,19 +440,14 @@ impl Camera {
     }
 }
 
-struct State<'a> {
+struct Input {
     quit: bool,
     accelerating: bool,
-    last_fired: Option<u32>,
     firing: bool,
-    rotating: Rotating,
-    ship: Ship<'a>,
-    map: &'a Map<'a>,
-    camera: Camera,
-    shooters: Vec<Shooter<'a>>,
+    rotating: Rotating
 }
 
-impl<'a> State<'a> {
+impl Input {
     fn process_events(&mut self) {
         loop {
             match sdl2::event::poll_event() {
@@ -478,25 +482,20 @@ impl<'a> State<'a> {
         }
     }
 
-    fn advance(&mut self, now: u32, dt: f64) {
-        self.process_events();
-        let firing = match (self.firing, self.last_fired) {
-            (true, None) => {
-                self.last_fired = Some(now);
-                true
-            },
-            (true, Some(t)) =>
-                if now - t > self.ship.spec.firing_interval {
-                    self.last_fired = Some(now);
-                    true
-                } else {
-                    false
-                },
-            _ =>
-                false,
-        };
+}
 
-        self.ship.advance(self.map, self.accelerating, firing, self.rotating, dt);
+struct State<'a> {
+    input: Input,
+    ship: Ship<'a>,
+    map: &'a Map<'a>,
+    camera: Camera,
+    shooters: Vec<Shooter<'a>>,
+}
+
+impl<'a> State<'a> {
+    fn advance(&mut self, dt: f64) {
+        self.input.process_events();
+        self.ship.advance(self.map, &self.input, dt);
         for i in range(0, self.shooters.len()) {
             self.shooters[i].advance(self.map, dt);
         }
@@ -510,7 +509,7 @@ impl<'a> State<'a> {
         // Paint the map
         self.map.render(renderer, &self.camera);
         // Paint the ship
-        self.ship.render(renderer, self.accelerating, &self.camera);
+        self.ship.render(renderer, &self.input, &self.camera);
         // Paint the shooters
         for shooter in self.shooters.iter() {
             shooter.render(renderer, &self.camera);
@@ -524,9 +523,9 @@ impl<'a> State<'a> {
         loop {
             let time_now = sdl2::get_ticks();
             let dt = (time_now - prev_time) as f64;
-            self.advance(time_now, dt);
+            self.advance(dt);
             self.render(renderer);
-            if self.quit {
+            if self.input.quit {
                 break;
             }
             prev_time = time_now;
@@ -580,7 +579,7 @@ fn main() {
                 angle: 90.,
             },
             bullet_spec: bullet_spec,
-            firing_interval: 1000,
+            firing_interval: 1000.,
             shoot_from: Vec2{x: 18., y: 0.},
             bbox: &BBox{rects: vec![Rect{
                 pos: Vec2{x: -15., y: -12.},
@@ -594,6 +593,7 @@ fn main() {
         },
         speed: Vec2 {x: 0., y: 0.},
         bullets: Vec::new(),
+        not_firing_for: 100000.,
     };
     let map_surface = sdl2_image::LoadSurface::from_file(&("assets/background.png".parse()).unwrap()).ok().unwrap();
     let map_texture = renderer.create_texture_from_surface(&map_surface).ok().unwrap();
@@ -623,11 +623,12 @@ fn main() {
         }]},
     };
     let mut state = State {
-        quit: false,
-        accelerating: false,
-        firing: false,
-        last_fired: None,
-        rotating: Rotating::Still,
+        input: Input{
+            quit: false,
+            accelerating: false,
+            firing: false,
+            rotating: Rotating::Still,
+        },
         ship: ship,
         map: map,
         camera: Camera {
