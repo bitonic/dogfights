@@ -71,6 +71,18 @@ impl BBox {
         }
         overlap
     }
+
+    fn render(&self, renderer: &Renderer, cam: &Camera, trans: &Transform) {
+        renderer.set_draw_color(Color::RGB(0xFF, 0x00, 0x00)).ok().unwrap();
+        for rect in self.rects.iter() {
+            let trans = cam.adjust(trans);
+            let (tl, tr, bl, br) = rect.transform(&trans);
+            renderer.draw_line(tl.point(), tr.point());
+            renderer.draw_line(tr.point(), br.point());
+            renderer.draw_line(br.point(), bl.point());
+            renderer.draw_line(bl.point(), tl.point());
+        }
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -184,6 +196,10 @@ impl<'a> Ship<'a> {
         }
 
         // =============================================================
+        // Debugging -- render bbox
+        self.spec.bbox.render(renderer, cam, &self.trans);
+
+        // =============================================================
         // Render bullets
         for bullet in self.bullets.iter() {
             bullet.render(renderer, cam);
@@ -199,6 +215,7 @@ struct BulletSpec<'a> {
     sprite: &'a Sprite<'a>,
     speed: f64,
     lifetime: f64,
+    bbox: &'a BBox,
 }
 
 #[deriving(PartialEq, Clone, Copy)]
@@ -239,7 +256,9 @@ impl<'a> Bullet<'a> {
     }
 
     fn render(&self, renderer: &Renderer, cam: &Camera) -> () {
-        self.spec.sprite.render(renderer, &cam.adjust(&self.trans)).ok().unwrap()
+        self.spec.sprite.render(renderer, &cam.adjust(&self.trans)).ok().unwrap();
+        // Debugging -- render bbox
+        self.spec.bbox.render(renderer, cam, &self.trans);
     }
 }
 
@@ -251,7 +270,6 @@ struct ShooterSpec<'a> {
     trans: Transform,
     bullet_spec: &'a BulletSpec<'a>,
     firing_rate: f64,
-    bbox: &'a BBox,
 }
 
 struct Shooter<'a> {
@@ -444,7 +462,8 @@ struct Input {
     quit: bool,
     accelerating: bool,
     firing: bool,
-    rotating: Rotating
+    rotating: Rotating,
+    paused: bool,
 }
 
 impl Input {
@@ -461,23 +480,24 @@ impl Input {
                         sdl2::keycode::KeyCode::Right => self.rotating = Rotating::Right,
                         sdl2::keycode::KeyCode::Up    => self.accelerating = true,
                         sdl2::keycode::KeyCode::X     => self.firing = true,
+                        sdl2::keycode::KeyCode::P     => self.paused = !self.paused,
                         _                             => {},
                     },
-                sdl2::event::Event::KeyUp(_, _, key, _, _, _) =>
-                    match (self.accelerating, self.firing, self.rotating, key) {
-                        (true, _, _, sdl2::keycode::KeyCode::Up) =>
-                            self.accelerating = false,
-                        (_, _, Rotating::Left, sdl2::keycode::KeyCode::Left) =>
-                        self.rotating = Rotating::Still,
-                        (_, _, Rotating::Right, sdl2::keycode::KeyCode::Right) =>
-                            self.rotating = Rotating::Still,
-                        (_, true, _, sdl2::keycode::KeyCode::X) =>
-                            self.firing = false,
-                        _ =>
-                        {},
-                    },
-                _ =>
-                {},
+                sdl2::event::Event::KeyUp(_, _, key, _, _, _) => {
+                    if self.accelerating && key == sdl2::keycode::KeyCode::Up {
+                        self.accelerating = false
+                    };
+                    if self.firing && key == sdl2::keycode::KeyCode::X {
+                        self.firing = false;
+                    };
+                    if self.rotating == Rotating::Left && key == sdl2::keycode::KeyCode::Left {
+                        self.rotating = Rotating::Still;
+                    };
+                    if self.rotating == Rotating::Right && key == sdl2::keycode::KeyCode::Right {
+                        self.rotating = Rotating::Still;
+                    };
+                },
+                _ => {},
             }
         }
     }
@@ -495,11 +515,13 @@ struct State<'a> {
 impl<'a> State<'a> {
     fn advance(&mut self, dt: f64) {
         self.input.process_events();
-        self.ship.advance(self.map, &self.input, dt);
-        for i in range(0, self.shooters.len()) {
-            self.shooters[i].advance(self.map, dt);
+        if !self.input.paused {
+            self.ship.advance(self.map, &self.input, dt);
+            for i in range(0, self.shooters.len()) {
+                self.shooters[i].advance(self.map, dt);
+            }
+            self.camera.advance(self.map, &self.ship, dt);
         }
-        self.camera.advance(self.map, &self.ship, dt);
     }
 
     fn render(&self, renderer: &Renderer) {
@@ -557,6 +579,14 @@ fn main() {
         },
         speed: 1.,
         lifetime: 5000.,
+        bbox: &BBox {
+            rects: vec![
+                Rect{
+                    pos: Vec2{y: -1.5, x: -6.},
+                    h: 3.,
+                    w: 12.
+                }]
+        },
     };
     let ship_pos = Vec2 {x: SCREEN_WIDTH/2., y: SCREEN_HEIGHT/2.};
     let ship = Ship {
@@ -581,11 +611,20 @@ fn main() {
             bullet_spec: bullet_spec,
             firing_interval: 1000.,
             shoot_from: Vec2{x: 18., y: 0.},
-            bbox: &BBox{rects: vec![Rect{
-                pos: Vec2{x: -15., y: -12.},
-                w: 30.,
-                h: 30.
-            }]},
+            bbox: &BBox{
+                rects: vec![
+                    Rect{
+                        pos: Vec2{x: -12., y: -5.5},
+                        w: 25.,
+                        h: 11.
+                    },
+                    Rect{
+                        pos: Vec2{x: 0., y: -15.},
+                        w: 7.5,
+                        h: 30.
+                    }
+                    ]
+            },
         },
         trans: Transform {
             pos: ship_pos,
@@ -616,11 +655,6 @@ fn main() {
         },
         bullet_spec: bullet_spec,
         firing_rate: 2000.,
-        bbox: &BBox{rects: vec![Rect{
-            pos: Vec2{x: -16., y: -12.},
-            w: 32.,
-            h: 24.
-        }]},
     };
     let mut state = State {
         input: Input{
@@ -628,6 +662,7 @@ fn main() {
             accelerating: false,
             firing: false,
             rotating: Rotating::Still,
+            paused: false,
         },
         ship: ship,
         map: map,

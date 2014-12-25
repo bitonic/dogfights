@@ -48,6 +48,10 @@ impl Transform {
     pub fn id() -> Transform {
         Transform{pos: Vec2{x: 0., y: 0.}, rotation: 0.}
     }
+
+    pub fn pos(pos: Vec2) -> Transform {
+        Transform{pos: pos, rotation: 0.}
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -91,10 +95,12 @@ impl Vec2 {
     //     }
     // }
 
+    // We rotate clockwise because SDL does so too -- the y axes starts
+    // from 0 at the top and decreases going down.
     pub fn rotate(&self, rotation: f64) -> Vec2 {
         Vec2 {
-            x: self.x * rotation.cos() - self.y * rotation.sin(),
-            y: self.x * rotation.sin() + self.y * rotation.cos(),
+            x: self.x * rotation.cos() + self.y * rotation.sin(),
+            y: self.y * rotation.cos() - self.x * rotation.sin(),
         }
     }
 
@@ -138,6 +144,14 @@ impl Rect {
         }
     }
 
+    #[inline(always)]
+    pub fn transform(&self, trans: &Transform) -> (Vec2, Vec2, Vec2, Vec2) {
+        (self.pos.transform(trans),
+         (self.pos + Vec2{x: self.w, y: 0.}).transform(trans),
+         (self.pos + Vec2{x: 0., y: self.h}).transform(trans),
+         (self.pos + Vec2{x: self.w, y: self.h}).transform(trans))
+    }
+
     pub fn overlaps(&self, self_t: &Transform, other: &Rect, other_t: &Transform) -> bool {
         #[inline(always)]
         fn project_rect(axis: Vec2, tl: Vec2, tr: Vec2, bl: Vec2, br: Vec2) -> (f64, f64) {
@@ -163,14 +177,8 @@ impl Rect {
         }
 
         // Get the four corners of each rect.
-        let self_tl  = self.pos.transform(self_t);
-        let self_tr  = (self.pos + Vec2{x: self.w, y: 0.}).transform(self_t);
-        let self_bl  = (self.pos + Vec2{x: 0., y: self.h}).transform(self_t);
-        let self_br  = (self.pos + Vec2{x: self.w, y: self.h}).transform(self_t);
-        let other_tl = other.pos.transform(other_t);
-        let other_tr = (other.pos + Vec2{x: other.w, y: 0.}).transform(other_t);
-        let other_bl = (other.pos + Vec2{x: 0., y: other.h}).transform(other_t);
-        let other_br = (other.pos + Vec2{x: other.w, y: other.h}).transform(other_t);
+        let (self_tl, self_tr, self_bl, self_br) = self.transform(self_t);
+        let (other_tl, other_tr, other_bl, other_br) = other.transform(other_t);
 
         // Get the 4 axes.
         let axis_1 = self_tl - self_tr;
