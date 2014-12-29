@@ -18,8 +18,8 @@ pub mod physics;
 static SCREEN_WIDTH: f64 = 800.;
 static SCREEN_HEIGHT: f64 = 600.;
 // 10 ms timesteps
-static TIME_STEP: f64 = 10.;
-static MAX_FRAME_TIME: f64 = 250.;
+static TIME_STEP: f64 = 0.01;
+static MAX_FRAME_TIME: f64 = 0.250;
 
 // ---------------------------------------------------------------------
 // Sprites
@@ -665,7 +665,7 @@ impl<'a> State<'a> {
             if input.quit { break };
 
             let time_now = sdl2::get_ticks();
-            let frame_time = (time_now - prev_time) as f64;
+            let frame_time = ((time_now - prev_time) as f64) / 1000.; // Seconds to millis
             let frame_time = if frame_time > MAX_FRAME_TIME { MAX_FRAME_TIME } else { frame_time };
             prev_time = time_now;
             accumulator += frame_time;
@@ -711,7 +711,7 @@ fn main() {
             center: Vec2{x: 1., y: 6.},
             angle: 90.,
         },
-        velocity: 1.,
+        velocity: 1000.,
         lifetime: 5000.,
         bbox: &BBox {
             rects: vec![
@@ -725,11 +725,11 @@ fn main() {
     let ship_pos = Vec2 {x: SCREEN_WIDTH/2., y: SCREEN_HEIGHT/2.};
     let ship = Ship {
         spec: &ShipSpec {
-            rotation_velocity: 0.01,
-            rotation_velocity_accelerating: 0.001,
-            acceleration: 0.025,
+            rotation_velocity: 10.,
+            rotation_velocity_accelerating: 1.,
+            acceleration: 800.,
             friction: 0.02,
-            gravity: 0.008,
+            gravity: 100.,
             sprite: &Sprite{
                 texture: planes_texture,
                 rect: Rect{pos: Vec2{x: 128., y: 96.}, w: 30., h: 24.},
@@ -743,7 +743,7 @@ fn main() {
                 angle: 90.,
             },
             bullet_spec: bullet_spec,
-            firing_interval: 1000.,
+            firing_interval: 1.,
             shoot_from: Vec2{x: 18., y: 0.},
             bbox: &BBox{
                 rects: vec![

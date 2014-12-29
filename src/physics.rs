@@ -2,7 +2,7 @@ extern crate sdl2;
 
 use geometry::Vec2;
 
-#[deriving(PartialEq, Clone, Copy)]
+#[deriving(PartialEq, Clone, Copy, Show)]
 pub struct State {
     pub pos: Vec2,                    // Position
     pub v: Vec2,                      // Velocity
