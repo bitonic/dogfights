@@ -42,29 +42,3 @@ pub fn integrate<T: Acceleration>(x: &T, state: &State, dt: f64) -> State {
         v: state.v + dvdt * dt,
     }
 }
-
-pub trait Interpolate {
-    fn interpolate(&self, next: &Self, alpha: f64) -> Self;
-}
-
-impl Interpolate for State {
-    #[inline]
-    fn interpolate(&self, current: &State, alpha: f64) -> State {
-        let previous = self;
-        State {
-            pos: current.pos*alpha + previous.pos*(1.-alpha),
-            v: current.v*alpha + previous.v*(1.-alpha),
-        }
-    }
-}
-
-// #[test]
-// fn test_interpolate() {
-//     let state_1 = State {
-//         pos: Vec2{x: 3, y: 2},
-//         v: Vec2{x: -1, y: 4},
-//     }
-//     let state_2 = State {
-        
-//     }
-// }

@@ -7,7 +7,6 @@ use sdl2::render::{Renderer, Texture};
 use std::num::FloatMath;
 
 use geometry::{to_radians, from_radians, Vec2, Rect, Transform, overlapping};
-use physics::Interpolate;
 
 pub mod geometry;
 pub mod physics;
@@ -33,15 +32,6 @@ struct Sprite<'a> {
     angle: f64,
 }
 
-// impl<'a> std::fmt::Show for Sprite<'a> {
-//     fn fmt(&self, fmter: &mut std::fmt::Formatter) -> std::fmt::Result {
-//         match fmter.write_str("<<Sprite>>") {
-//             Ok(()) => Ok(()),
-//             Err(ioerr) =>
-//         Ok(())
-//     }
-// }
-
 impl<'a> Sprite<'a> {
     fn render(&self, renderer: &Renderer, trans: &Transform) -> SdlResult<()> {
         let dst = Rect{
@@ -66,15 +56,15 @@ struct BBox {
 
 impl BBox {
     fn render(&self, renderer: &Renderer, cam: &Camera, trans: &Transform) {
-        // renderer.set_draw_color(Color::RGB(0xFF, 0x00, 0x00)).ok().unwrap();
-        // for rect in self.rects.iter() {
-        //     let trans = cam.adjust(trans);
-        //     let (tl, tr, bl, br) = rect.transform(&trans);
-        //     renderer.draw_line(tl.point(), tr.point()).ok().unwrap();
-        //     renderer.draw_line(tr.point(), br.point()).ok().unwrap();
-        //     renderer.draw_line(br.point(), bl.point()).ok().unwrap();
-        //     renderer.draw_line(bl.point(), tl.point()).ok().unwrap();
-        // }
+        renderer.set_draw_color(Color::RGB(0xFF, 0x00, 0x00)).ok().unwrap();
+        for rect in self.rects.iter() {
+            let trans = cam.adjust(trans);
+            let (tl, tr, bl, br) = rect.transform(&trans);
+            renderer.draw_line(tl.point(), tr.point()).ok().unwrap();
+            renderer.draw_line(tr.point(), br.point()).ok().unwrap();
+            renderer.draw_line(br.point(), bl.point()).ok().unwrap();
+            renderer.draw_line(bl.point(), tl.point()).ok().unwrap();
+        }
     }
 }
 
@@ -152,16 +142,6 @@ impl<'a> Camera<'a> {
     }
 }
 
-impl<'a> physics::Interpolate for Camera<'a> {
-    #[inline]
-    fn interpolate(&self, next: &Camera<'a>, alpha: f64) -> Camera<'a> {
-        let previous = physics::State{pos: self.pos, v: self.velocity};
-        let current = physics::State{pos: next.pos, v: next.velocity};
-        let middle = previous.interpolate(&current, alpha);
-        Camera{pos: middle.pos, velocity: middle.v, .. *self}
-    }
-}
-
 // ---------------------------------------------------------------------
 // Ship
 
@@ -221,36 +201,7 @@ impl<'a> physics::Acceleration for Ship<'a> {
     }
 }
 
-impl<'a> physics::Interpolate for Ship<'a> {
-    fn interpolate(&self, next: &Ship<'a>, alpha: f64) -> Ship<'a> {
-        let st = self.phys_state().interpolate(&next.phys_state(), alpha);
-        if alpha < 0.5 {
-            self.set_phys_state(&st)
-        } else {
-            next.set_phys_state(&st)
-        }
-    }
-}
-
 impl<'a> Ship<'a> {
-    #[inline]
-    fn phys_state(&self) -> physics::State {
-        physics::State {
-            pos: self.trans.pos,
-            v: self.velocity,
-
-        }
-    }
-
-    #[inline]
-    fn set_phys_state(&self, state: &physics::State) -> Ship<'a> {
-        Ship {
-            trans: Transform{pos: state.pos, rotation: self.trans.rotation},
-            velocity: state.v,
-            .. self.clone()
-        }
-    }
-
     fn advance(&self, map: &Map, input: &Input, hits: uint, dt: f64) -> Ship<'a> {
         let accelerating = input.accelerating;
         let rotating = input.rotating;
@@ -597,17 +548,6 @@ struct State<'a> {
     shooters: Vec<Shooter<'a>>,
 }
 
-impl<'a> physics::Interpolate for State<'a> {
-    fn interpolate(&self, next: &State<'a>, alpha: f64) -> State<'a> {
-        State{
-            map: self.map,
-            ship: self.ship.interpolate(&next.ship, alpha),
-            camera: self.camera.interpolate(&next.camera, alpha),
-            shooters: if alpha < 0.5 { self.shooters.clone() } else { next.shooters.clone() },
-        }
-    }
-}
-
 impl<'a> State<'a> {
     fn advance(&self, input: &Input, dt: f64) -> State<'a> {
         if !input.paused {
@@ -680,7 +620,7 @@ impl<'a> State<'a> {
                     previous = current;
                     current = new;
                 }
-                // state = previous.interpolate(&current, accumulator/TIME_STEP);
+                // TODO: interpolate previous and current
                 state = current;
             }
 
