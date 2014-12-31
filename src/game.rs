@@ -1,14 +1,15 @@
 extern crate sdl2;
 extern crate sdl2_image;
+extern crate "rustc-serialize" as rustc_serialize;
 
 use std::num::FloatMath;
 use std::collections::HashMap;
-use std::collections::hash_map::{Entries, Values};
 use sdl2::SdlResult;
 use sdl2::pixels::Color;
 use sdl2::render::{Renderer, Texture};
 use geometry::{to_radians, from_radians, Vec2, Rect, Transform};
 use physics;
+use std::io::net::ip::SocketAddr;
 
 // ---------------------------------------------------------------------
 // Constants
@@ -19,6 +20,8 @@ static SCREEN_HEIGHT: f64 = 600.;
 // 50 ms timesteps
 const TIME_STEP: f64 = 0.01;
 const MAX_FRAME_TIME: f64 = 0.250;
+
+const NUM_SNAPSHOTS: uint = 64;
 
 // ---------------------------------------------------------------------
 // Bounding boxes
@@ -268,7 +271,7 @@ struct BulletSpec<'a> {
     bbox: &'a BBox<'a>,
 }
 
-#[deriving(PartialEq, Clone, Copy, Show)]
+#[deriving(PartialEq, Clone, Copy, Show, RustcDecodable, RustcEncodable)]
 struct Bullet {
     spec: SpecId,
     trans: Transform,
@@ -321,7 +324,7 @@ struct ShipSpec<'a> {
     bbox: &'a BBox<'a>,
 }
 
-#[deriving(PartialEq, Clone, Copy, Show)]
+#[deriving(PartialEq, Clone, Copy, Show, RustcEncodable, RustcDecodable)]
 struct Ship {
     spec: SpecId,
     trans: Transform,
@@ -454,7 +457,7 @@ struct ShooterSpec<'a> {
     firing_rate: f64,
 }
 
-#[deriving(PartialEq, Clone, Copy, Show)]
+#[deriving(PartialEq, Clone, Copy, Show, RustcEncodable, RustcDecodable)]
 struct Shooter {
     spec: SpecId,
     time_since_fire: f64,
@@ -520,14 +523,6 @@ impl Actors {
         self.actors.insert(actor_id, actor);
     }
 
-    fn iter(&self) -> Entries<ActorId, Actor> {
-        self.actors.iter()
-    }
-
-    fn values(&self) -> Values<ActorId, Actor> {
-        self.actors.values()
-    }
-
     fn get(&self, actor_id: ActorId) -> &Actor {
         match self.actors.get(&actor_id) {
             None => unreachable!(),
@@ -544,14 +539,14 @@ struct Game {
 // ---------------------------------------------------------------------
 // Input
 
-#[deriving(PartialEq, Clone, Copy, Show)]
+#[deriving(PartialEq, Clone, Copy, Show, RustcDecodable, RustcEncodable)]
 enum Rotating {
     Still,
     Left,
     Right,
 }
 
-#[deriving(PartialEq, Clone, Copy)]
+#[deriving(PartialEq, Clone, Copy, Show, RustcEncodable, RustcDecodable)]
 struct Input {
     quit: bool,
     accelerating: bool,
@@ -616,7 +611,7 @@ impl Game {
     fn advance<'a>(&self, spec: &GameSpec<'a>, inputs: &Vec<ShipInput>, dt: f64) -> Game {
         // First move everything, spawn new stuff
         let mut advanced_actors = Actors::prepare_new(&self.actors);
-        for (actor_id, actor) in self.actors.iter() {
+        for (actor_id, actor) in self.actors.actors.iter() {
             let actor_input = ShipInput::lookup(inputs, *actor_id);
             match actor.advance(spec, &mut advanced_actors, actor_input, dt) {
                 None                 => {},
@@ -626,7 +621,7 @@ impl Game {
         
         // Then compute interactions
         let mut interacted_actors = Actors::prepare_new(&advanced_actors);
-        for (actor_id, actor) in advanced_actors.iter() {
+        for (actor_id, actor) in advanced_actors.actors.iter() {
             match actor.interact(spec, &advanced_actors) {
                 None                   => {},
                 Some(interacted_actor) => { interacted_actors.insert(*actor_id, interacted_actor) },
@@ -643,7 +638,7 @@ impl Game {
         // Paint the background for the whole thing
         try!(renderer.set_draw_color(Color::RGB(0x00, 0x00, 0x00)));
         try!(spec.map.render(renderer, &trans.pos));
-        for actor in self.actors.values() {
+        for actor in self.actors.actors.values() {
             try!(actor.render(spec, renderer, trans));
         };
         Ok(())
@@ -708,6 +703,23 @@ impl<'a> Camera<'a> {
 
         cam
     }
+}
+
+// ---------------------------------------------------------------------
+// Server
+
+type SnapshotId = uint;
+
+struct Server<'a> {
+    game_spec: GameSpec<'a>,
+    snapshots: [Game, ..NUM_SNAPSHOTS],
+    snapshot_num: SnapshotId,
+    clients: HashMap<SocketAddr, ClientInfo>,
+}
+
+struct ClientInfo {
+    acked_snapshot: SnapshotId,
+    ship_id: ActorId,
 }
 
 // ---------------------------------------------------------------------

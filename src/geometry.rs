@@ -1,4 +1,5 @@
 extern crate sdl2;
+extern crate "rustc-serialize" as rustc_serialize;
 
 use std::num::FloatMath;
 use std::num::Float;
@@ -20,7 +21,7 @@ pub fn from_radians(x: f64) -> f64 {
 // ---------------------------------------------------------------------
 // Transform
 
-#[deriving(PartialEq, Clone, Copy, Show)]
+#[deriving(PartialEq, Clone, Copy, Show, RustcEncodable, RustcDecodable)]
 pub struct Transform {
     pub pos: Vec2,
     pub rotation: f64,
@@ -64,7 +65,7 @@ impl Transform {
 // ---------------------------------------------------------------------
 // Vec
 
-#[deriving(PartialEq, Clone, Show, Copy)]
+#[deriving(PartialEq, Clone, Show, Copy, RustcEncodable, RustcDecodable)]
 pub struct Vec2 {
     pub x: f64,
     pub y: f64,
@@ -133,7 +134,7 @@ impl Vec2 {
 // ---------------------------------------------------------------------
 // Rect
 
-#[deriving(PartialEq, Clone, Show, Copy)]
+#[deriving(PartialEq, Clone, Show, Copy, RustcDecodable, RustcEncodable)]
 pub struct Rect {
     // The top-left corner of the rectangle.
     pub pos: Vec2,
