@@ -226,6 +226,13 @@ impl Actor {
             Actor::Bullet(ref bullet) => bullet.render(sspec, renderer, trans),
         }
     }
+
+    fn is_ship(&self) -> &Ship {
+        match *self {
+            Actor::Ship(ref ship) => ship,
+            _                     => unreachable!(),
+        }
+    }
 }
 
 type SpecId = uint;
@@ -324,6 +331,21 @@ struct ShipSpec<'a> {
     bbox: &'a BBox<'a>,
 }
 
+#[deriving(PartialEq, Clone, Show, Copy)]
+struct CameraSpec {
+    acceleration: f64,
+    // The minimum distance from the top/bottom edges to the ship
+    v_padding: f64,
+    // The minimum distance from the left/right edges to the ship
+    h_padding: f64,
+}
+
+#[deriving(PartialEq, Clone, Show, Copy, RustcEncodable, RustcDecodable)]
+struct Camera {
+    pos: Vec2,
+    velocity: Vec2,
+}
+
 #[deriving(PartialEq, Clone, Copy, Show, RustcEncodable, RustcDecodable)]
 struct Ship {
     spec: SpecId,
@@ -332,6 +354,7 @@ struct Ship {
     not_firing_for: f64,
     accelerating: bool,
     rotating: Rotating,
+    camera: Camera,
 }
 
 struct ShipState<'a> {
@@ -363,6 +386,50 @@ impl<'a> physics::Acceleration for ShipState<'a> {
     }
 }
 
+impl Camera {
+    #[inline]
+    fn transform(&self) -> Transform {
+        Transform{pos: self.pos, rotation: 0.}
+    }
+
+    #[inline(always)]
+    fn left(&self) -> f64 { self.pos.x }
+    #[inline(always)]
+    fn right(&self) -> f64 { self.pos.x + SCREEN_WIDTH }
+    #[inline(always)]
+    fn top(&self) -> f64 { self.pos.y }
+    #[inline(always)]
+    fn bottom(&self) -> f64 { self.pos.y + SCREEN_HEIGHT }
+
+    #[inline]
+    fn advance<'a>(&self, sspec: &GameSpec<'a>, ship_velocity: Vec2, ship_trans: Transform, dt: f64) -> Camera {
+        let &mut cam = self;
+        let spec = sspec.camera_spec;
+        let map = sspec.map;
+
+        // Push the camera based on the ship velocity
+        cam.velocity = ship_velocity * spec.acceleration;
+        cam.pos = cam.pos + cam.velocity * dt;
+
+        // Make sure the ship is not too much to the edge
+        if cam.left() + spec.h_padding > ship_trans.pos.x {
+            cam.pos.x = ship_trans.pos.x - spec.h_padding
+        } else if cam.right() - spec.h_padding < ship_trans.pos.x {
+            cam.pos.x = (ship_trans.pos.x + spec.h_padding) - SCREEN_WIDTH
+        }
+        if cam.top() + spec.v_padding > ship_trans.pos.y {
+            cam.pos.y = ship_trans.pos.y - spec.v_padding
+        } else if cam.bottom() - spec.v_padding < ship_trans.pos.y {
+            cam.pos.y = (ship_trans.pos.y + spec.v_padding) - SCREEN_HEIGHT
+        }
+
+        // Make sure it stays in the map
+        cam.pos = map.bound_rect(cam.pos, SCREEN_WIDTH, SCREEN_HEIGHT);
+
+        cam
+    }
+}
+
 impl Ship {
     fn advance<'a>(&self, sspec: &GameSpec<'a>, actors: &mut Actors, input: Option<Input>, dt: f64) -> Option<Ship> {
         let spec = sspec.specs[self.spec].is_ship();
@@ -382,6 +449,7 @@ impl Ship {
             };
         let mut trans = self.trans;
         let mut velocity = self.velocity;
+        let mut camera = self.camera;
 
         // =============================================================
         // Apply the rotation
@@ -406,6 +474,10 @@ impl Ship {
         trans.pos = sspec.map.bound(trans.pos);
 
         // =============================================================
+        // Move the camera
+        camera = self.camera.advance(sspec, velocity, trans, dt);
+
+        // =============================================================
         // Add new bullet
         if firing {
             let shoot_from = spec.shoot_from.rotate(trans.rotation);
@@ -424,6 +496,7 @@ impl Ship {
             not_firing_for: not_firing_for,
             accelerating: accelerating,
             rotating: rotating,
+            camera: camera,
         };
         Some(new)
     }
@@ -491,6 +564,7 @@ impl Shooter {
 #[deriving(PartialEq, Clone, Copy)]
 struct GameSpec<'a> {
     map: &'a Map<'a>,
+    camera_spec: &'a CameraSpec,
     specs: &'a [Spec<'a>],
 }
 
@@ -646,66 +720,6 @@ impl Game {
 }
 
 // ---------------------------------------------------------------------
-// Camera
-
-#[deriving(PartialEq, Clone, Show, Copy)]
-struct CameraSpec {
-    acceleration: f64,
-    // The minimum distance from the top/bottom edges to the ship
-    v_padding: f64,
-    // The minimum distance from the left/right edges to the ship
-    h_padding: f64,
-}
-
-#[deriving(PartialEq, Clone, Show, Copy)]
-struct Camera<'a> {
-    spec: &'a CameraSpec,
-    pos: Vec2,
-    velocity: Vec2,
-}
-
-impl<'a> Camera<'a> {
-    #[inline]
-    fn transform(&self) -> Transform {
-        Transform{pos: self.pos, rotation: 0.}
-    }
-
-    #[inline(always)]
-    fn left(&self) -> f64 { self.pos.x }
-    #[inline(always)]
-    fn right(&self) -> f64 { self.pos.x + SCREEN_WIDTH }
-    #[inline(always)]
-    fn top(&self) -> f64 { self.pos.y }
-    #[inline(always)]
-    fn bottom(&self) -> f64 { self.pos.y + SCREEN_HEIGHT }
-
-    fn advance(&self, map: &Map, ship: &Ship, dt: f64) -> Camera<'a> {
-        let &mut cam = self;
-
-        // Push the camera based on the ship velocity
-        cam.velocity = ship.velocity * self.spec.acceleration;
-        cam.pos = cam.pos + cam.velocity * dt;
-
-        // Make sure the ship is not too much to the edge
-        if cam.left() + cam.spec.h_padding > ship.trans.pos.x {
-            cam.pos.x = ship.trans.pos.x - cam.spec.h_padding
-        } else if cam.right() - cam.spec.h_padding < ship.trans.pos.x {
-            cam.pos.x = (ship.trans.pos.x + cam.spec.h_padding) - SCREEN_WIDTH
-        }
-        if cam.top() + cam.spec.v_padding > ship.trans.pos.y {
-            cam.pos.y = ship.trans.pos.y - cam.spec.v_padding
-        } else if cam.bottom() - cam.spec.v_padding < ship.trans.pos.y {
-            cam.pos.y = (ship.trans.pos.y + cam.spec.v_padding) - SCREEN_HEIGHT
-        }
-
-        // Make sure it stays in the map
-        cam.pos = map.bound_rect(cam.pos, SCREEN_WIDTH, SCREEN_HEIGHT);
-
-        cam
-    }
-}
-
-// ---------------------------------------------------------------------
 // Server
 
 type SnapshotId = uint;
@@ -729,7 +743,6 @@ struct ClientInfo {
 struct Client<'a> {
     game_spec: GameSpec<'a>,
     game: Game,
-    camera: Camera<'a>,
     player_id: ActorId,
 }
 
@@ -737,17 +750,9 @@ impl<'a> Client<'a> {
     fn advance(&self, input: &Input, dt: f64) -> Client<'a> {
         let inputs = vec![ShipInput{ship: self.player_id, input: *input}];
         let game = self.game.advance(&self.game_spec, &inputs, dt);
-        let camera = {
-            let ship = match *(game.actors.get(self.player_id)) {
-                Actor::Ship(ref ship) => ship,
-                _                     => unreachable!(),
-            };
-            self.camera.advance(self.game_spec.map, ship, dt)
-        };
         Client{
             game_spec: self.game_spec,
             game: game,
-            camera: camera,
             player_id: self.player_id
         }
     }
@@ -787,7 +792,8 @@ impl<'a> Client<'a> {
                 state = current;
             }
 
-            state.game.render(&state.game_spec, renderer, &state.camera.transform()).ok().expect("Failed to render the state");
+            let camera = state.game.actors.get(state.player_id).is_ship().camera;
+            state.game.render(&state.game_spec, renderer, &camera.transform()).ok().expect("Failed to render the state");
             renderer.present();
         }
     }
@@ -893,8 +899,14 @@ pub fn client() {
         background_color: Color::RGB(0x58, 0xB7, 0xFF),
         background_texture: &map_texture,
     };
+    let camera_spec = &CameraSpec {
+        acceleration: 1.2,
+        h_padding: 220.,
+        v_padding: 220. * SCREEN_HEIGHT / SCREEN_WIDTH,
+    };
     let game_spec = GameSpec{
         map: map,
+        camera_spec: camera_spec,
         specs: specs.as_slice(),
     };
 
@@ -909,6 +921,14 @@ pub fn client() {
             not_firing_for: 100000.,
             accelerating: false,
             rotating: Rotating::Still,
+            camera: Camera{
+                pos: Vec2{
+                    x: ship_pos.x - SCREEN_WIDTH/2.,
+                    y: ship_pos.y - SCREEN_HEIGHT/2.,
+                },
+                velocity: Vec2::zero(),
+                
+            }
         }));
     let _ = actors.add(Actor::Shooter(
         Shooter{
@@ -917,24 +937,9 @@ pub fn client() {
         }));
     let game = Game{actors: actors};
 
-    // Camera
-    let camera = Camera{
-        spec: &CameraSpec {
-            acceleration: 1.2,
-            h_padding: 220.,
-            v_padding: 220. * SCREEN_HEIGHT / SCREEN_WIDTH,
-        },
-        pos: Vec2{
-            x: ship_pos.x - SCREEN_WIDTH/2.,
-            y: ship_pos.y - SCREEN_HEIGHT/2.,
-        },
-        velocity: Vec2::zero(),
-    };
-
     let client = Client{
         game_spec: game_spec,
         game: game,
-        camera: camera,
         player_id: player_id,
     };
     client.run(&renderer);

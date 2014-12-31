@@ -9,3 +9,4 @@ pub mod game;
 pub mod network;
 
 fn main() { game::client() }
+// fn main() {}
