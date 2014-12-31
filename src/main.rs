@@ -1,12 +1,13 @@
 extern crate sdl2;
 extern crate sdl2_image;
 
-use sdl2::pixels::Color;
-use sdl2::SdlResult;
-use sdl2::render::{Renderer, Texture};
 use std::num::FloatMath;
-
-use geometry::{to_radians, from_radians, Vec2, Rect, Transform, overlapping};
+use std::collections::HashMap;
+use std::collections::hash_map::{Entries, Values};
+use sdl2::SdlResult;
+use sdl2::pixels::Color;
+use sdl2::render::{Renderer, Texture};
+use geometry::{to_radians, from_radians, Vec2, Rect, Transform};
 
 pub mod geometry;
 pub mod physics;
@@ -14,22 +15,58 @@ pub mod physics;
 // ---------------------------------------------------------------------
 // Constants
 
-static SCREEN_WIDTH: f64 = 800.;
-static SCREEN_HEIGHT: f64 = 600.;
-// 10 ms timesteps
-static TIME_STEP: f64 = 0.01;
-static MAX_FRAME_TIME: f64 = 0.250;
+pub static SCREEN_WIDTH: f64 = 800.;
+pub static SCREEN_HEIGHT: f64 = 600.;
+
+// 50 ms timesteps
+const TIME_STEP: f64 = 0.01;
+const MAX_FRAME_TIME: f64 = 0.250;
+
+
+// ---------------------------------------------------------------------
+// Bounding boxes
+
+#[deriving(PartialEq, Clone)]
+pub struct BBox<'a> {
+    pub rects: &'a [Rect],
+}
+
+impl<'a> BBox<'a> {
+    fn overlapping(this: BBox, this_t: &Transform, other: BBox, other_t: &Transform) -> bool {
+        let mut overlap = false;
+        for this in this.rects.iter() {
+            if overlap { break };
+            for other in other.rects.iter() {
+                if overlap { break };
+                overlap = Rect::overlapping(this, this_t, other, other_t);
+            }
+        }
+        overlap
+    }
+
+    fn render(&self, renderer: &Renderer, trans: &Transform) -> SdlResult<()> {
+        try!(renderer.set_draw_color(Color::RGB(0xFF, 0x00, 0x00)));
+        for rect in self.rects.iter() {
+            let (tl, tr, bl, br) = rect.transform(trans);
+            try!(renderer.draw_line(tl.point(), tr.point()));
+            try!(renderer.draw_line(tr.point(), br.point()));
+            try!(renderer.draw_line(br.point(), bl.point()));
+            try!(renderer.draw_line(bl.point(), tl.point()));
+        };
+        Ok(())
+    }
+}
 
 // ---------------------------------------------------------------------
 // Sprites
 
 #[deriving(PartialEq, Clone, Copy)]
-struct Sprite<'a> {
-    texture: &'a Texture,
-    rect: Rect,
-    center: Vec2,
+pub struct Sprite<'a> {
+    pub texture: &'a Texture,
+    pub rect: Rect,
+    pub center: Vec2,
     // If the sprite is already rotated by some angle
-    angle: f64,
+    pub angle: f64,
 }
 
 impl<'a> Sprite<'a> {
@@ -47,40 +84,568 @@ impl<'a> Sprite<'a> {
 }
 
 // ---------------------------------------------------------------------
-// Bounding boxes
+// Maps
 
-#[deriving(PartialEq, Clone)]
-struct BBox {
-    rects: Vec<Rect>,
+#[deriving(PartialEq, Clone, Copy)]
+pub struct Map<'a> {
+    pub w: f64,
+    pub h: f64,
+    pub background_color: Color, 
+    pub background_texture: &'a Texture,
 }
 
-impl BBox {
-    fn render(&self, renderer: &Renderer, cam: &Camera, trans: &Transform) {
-        renderer.set_draw_color(Color::RGB(0xFF, 0x00, 0x00)).ok().unwrap();
-        for rect in self.rects.iter() {
-            let trans = cam.adjust(trans);
-            let (tl, tr, bl, br) = rect.transform(&trans);
-            renderer.draw_line(tl.point(), tr.point()).ok().unwrap();
-            renderer.draw_line(tr.point(), br.point()).ok().unwrap();
-            renderer.draw_line(br.point(), bl.point()).ok().unwrap();
-            renderer.draw_line(bl.point(), tl.point()).ok().unwrap();
+impl<'a> Map<'a> {
+    pub fn bound(&self, p: Vec2) -> Vec2 {
+        // TODO handle points that are badly negative
+        fn f(n: f64, m: f64) -> f64 {
+            if n < 0. {
+                0.
+            } else if n > m {
+                m
+            } else {
+                n
+            }
+        };
+        Vec2{x: f(p.x, self.w), y: f(p.y, self.h)}
+    }
+
+    pub fn bound_rect(&self, p: Vec2, w: f64, h: f64) -> Vec2 {
+        fn f(n: f64, edge: f64, m: f64) -> f64 {
+            if n < 0. {
+                0.
+            } else if n + edge > m {
+                m - edge
+            } else {
+                n
+            }
+        };
+        Vec2{x: f(p.x, w, self.w), y: f(p.y, h, self.h)}
+    }
+
+    fn render(&self, renderer: &Renderer, pos: &Vec2) -> SdlResult<()> {
+        // Fill the whole screen with the background color
+        try!(renderer.set_draw_color(self.background_color));
+        let rect = sdl2::rect::Rect {
+            x: 0, y: 0, w: SCREEN_WIDTH as i32, h: SCREEN_HEIGHT as i32
+        };
+        try!(renderer.fill_rect(&rect));
+
+        // Fill with the background texture.  The assumption is that 4
+        // background images are needed to cover the entire screen:
+        // 
+        // map
+        // ┌──────────────────────────────────────────┐
+        // │                  ┊                   ┊   │
+        // │  pos             ┊                   ┊   │
+        // │  ┌─────────────────────┐             ┊   │
+        // │  │               ┊     │             ┊   │
+        // │  │             t ┊     │             ┊   │
+        // │┄┄│┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄│┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄│
+        // │  │               ┊     │             ┊   │
+        // │  └─────────────────────┘             ┊   │
+        // │                  ┊                   ┊   │
+        // └──────────────────────────────────────────┘
+
+        let bgr = try!(self.background_texture.query());
+        let bgr_w = bgr.width as f64;
+        let bgr_h = bgr.height as f64;
+        let t = Vec2 {
+            x: bgr_w - (pos.x % bgr_w),
+            y: bgr_h - (pos.y % bgr_h),
+        };
+        let top_left = Vec2 {
+            x: t.x - bgr_w,
+            y: t.y - bgr_h,
+        };
+        let top_right = Vec2 {
+            x: t.x,
+            y: t.y - bgr_h,
+        };
+        let bottom_left = Vec2 {
+            x: t.x - bgr_w,
+            y: t.y,
+        };
+        let bottom_right = Vec2 {
+            x: t.x,
+            y: t.y,
+        };
+        let to_rect = |p: Vec2| -> Option<sdl2::rect::Rect> {
+            Some(sdl2::rect::Rect {
+                x: p.x as i32,
+                y: p.y as i32,
+                w: bgr.width as i32,
+                h: bgr.height as i32,
+            })
+        };
+        
+        try!(renderer.copy(self.background_texture, None, to_rect(top_left)));
+        try!(renderer.copy(self.background_texture, None, to_rect(top_right)));
+        try!(renderer.copy(self.background_texture, None, to_rect(bottom_left)));
+        renderer.copy(self.background_texture, None, to_rect(bottom_right))
+    }
+}
+
+
+// ---------------------------------------------------------------------
+// Actors
+
+pub type ActorId = uint;
+
+#[deriving(PartialEq, Clone, Copy, Show)]
+pub enum Actor {
+    Ship(Ship),
+    Shooter(Shooter),
+    Bullet(Bullet),
+}
+
+impl Actor {
+    // Returns whether the actor is still alive
+    fn advance<'a>(&self, sspec: &StateSpec<'a>, actors: &mut Actors, input: Option<Input>, dt: f64) -> Option<Actor> {
+        match *self {
+            Actor::Ship(ref ship)       => ship.advance(sspec, actors, input, dt).map(|x| Actor::Ship(x)),
+            Actor::Shooter(ref shooter) => shooter.advance(sspec, actors, input, dt).map(|x| Actor::Shooter(x)),
+            Actor::Bullet(ref bullet)   => bullet.advance(sspec, actors, input, dt).map(|x| Actor::Bullet(x)),
+        }
+    }
+
+    fn interact<'a>(&self, _: &StateSpec<'a>, _: &Actors) -> Option<Actor> {
+        Some(*self)
+    }
+
+    fn render<'a>(&self, sspec: &StateSpec<'a>, renderer: &Renderer, trans: &Transform) -> SdlResult<()> {
+        match *self {
+            Actor::Ship(ref ship) => ship.render(sspec, renderer, trans),
+            Actor::Shooter(ref shooter) => shooter.render(sspec, renderer, trans),
+            Actor::Bullet(ref bullet) => bullet.render(sspec, renderer, trans),
         }
     }
 }
 
-fn overlapping_bbox(this: &BBox, this_t: &Transform, other: &BBox, other_t: &Transform) -> bool {
-    let mut overlap = false;
-    for this in this.rects.iter() {
-        if overlap { break };
-        for other in other.rects.iter() {
-            if overlap { break };
-            overlap = overlapping(this, this_t, other, other_t);
-        }
-    }
-    overlap
+pub type SpecId = uint;
+
+#[deriving(PartialEq, Clone, Copy)]
+pub enum Spec<'a> {
+    ShipSpec(ShipSpec<'a>),
+    ShooterSpec(ShooterSpec<'a>),
+    BulletSpec(BulletSpec<'a>),
 }
 
+impl<'a> Spec<'a> {
+    fn is_ship(&self) -> &ShipSpec<'a> {
+        match *self {
+            Spec::ShipSpec(ref spec) => spec,
+            _                        => unreachable!(),
+        }
+    }
 
+    fn is_shooter(&self) -> &ShooterSpec<'a> {
+        match *self {
+            Spec::ShooterSpec(ref spec) => spec,
+            _                           => unreachable!(),
+        }
+    }
+
+    fn is_bullet(&self) -> &BulletSpec<'a> {
+        match *self {
+            Spec::BulletSpec(ref spec) => spec,
+            _                          => unreachable!(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
+// Bullets
+
+#[deriving(PartialEq, Clone, Copy)]
+pub struct BulletSpec<'a> {
+    pub sprite: &'a Sprite<'a>,
+    pub velocity: f64,
+    pub lifetime: f64,
+    pub bbox: &'a BBox<'a>,
+}
+
+#[deriving(PartialEq, Clone, Copy, Show)]
+pub struct Bullet {
+    spec: SpecId,
+    trans: Transform,
+    age: f64,
+}
+
+impl Bullet {
+    fn advance<'a>(&self, sspec: &StateSpec<'a>, _: &mut Actors, input: Option<Input>, dt: f64) -> Option<Bullet> {
+        assert!(input.is_none());
+        let spec = sspec.specs[self.spec].is_bullet();
+        let pos = Vec2 {
+            x: self.trans.pos.x + (spec.velocity * self.trans.rotation.cos() * dt),
+            y: self.trans.pos.y + (-1. * spec.velocity * self.trans.rotation.sin() * dt),
+        };
+        let bullet = Bullet {
+            spec: self.spec,
+            trans: Transform{pos: pos, rotation: self.trans.rotation},
+            age: self.age + dt,
+        };
+        let alive =
+            bullet.trans.pos.x >= 0. && bullet.trans.pos.x <= sspec.map.w &&
+            bullet.trans.pos.y >= 0. && bullet.trans.pos.y <= sspec.map.h &&
+            bullet.age < spec.lifetime;
+        if alive { Some(bullet) } else { None }
+    }
+
+    fn render<'a>(&self, sspec: &StateSpec<'a>, renderer: &Renderer, trans: &Transform) -> SdlResult<()> {
+        let spec = sspec.specs[self.spec].is_bullet();
+        let trans = trans.adjust(&self.trans);
+        try!(spec.sprite.render(renderer, &trans));
+        // Debugging -- render bbox
+        spec.bbox.render(renderer, &trans)
+    }
+}
+
+// ---------------------------------------------------------------------
+// Ship
+
+#[deriving(PartialEq, Clone, Copy)]
+pub struct ShipSpec<'a> {
+    pub rotation_velocity: f64,
+    pub rotation_velocity_accelerating: f64,
+    pub acceleration: f64,
+    pub friction: f64,
+    pub gravity: f64,
+    pub sprite: &'a Sprite<'a>,
+    pub sprite_accelerating: &'a Sprite<'a>,
+    pub bullet_spec: SpecId,
+    pub firing_interval: f64,
+    pub shoot_from: Vec2,
+    pub bbox: &'a BBox<'a>,
+}
+
+#[deriving(PartialEq, Clone, Copy, Show)]
+pub struct Ship {
+    pub spec: SpecId,
+    pub trans: Transform,
+    pub velocity: Vec2,
+    pub not_firing_for: f64,
+    pub accelerating: bool,
+    pub rotating: Rotating,
+}
+
+struct ShipState<'a> {
+    spec: &'a ShipSpec<'a>,
+    accelerating: bool,
+    rotation: f64,
+}
+
+impl<'a> physics::Acceleration for ShipState<'a> {
+    fn acceleration(&self, state: &physics::State) -> Vec2 {
+        let mut f = Vec2::zero();
+        // Acceleration
+        if self.accelerating {
+            f.x += self.rotation.cos() * self.spec.acceleration;
+            // The sin is inverted because we push the opposite
+            // direction we're looking at.
+            f.y += -1. * self.rotation.sin() * self.spec.acceleration;
+        }
+
+        // Gravity
+        f.y += self.spec.gravity;
+
+        // Friction
+        let friction = state.v * self.spec.friction;
+        f = f - friction;
+
+        // Done
+        f
+    }
+}
+
+impl Ship {
+    fn advance<'a>(&self, sspec: &StateSpec<'a>, actors: &mut Actors, input: Option<Input>, dt: f64) -> Option<Ship> {
+        let spec = sspec.specs[self.spec].is_ship();
+        let mut not_firing_for = self.not_firing_for + dt;
+        let (accelerating, rotating, firing) =
+            match input {
+                None => (self.accelerating, self.rotating, false),
+                Some(input) => {
+                    let firing = if input.firing && self.not_firing_for >= spec.firing_interval {
+                        not_firing_for = 0.;
+                        true
+                    } else {
+                        false
+                    };
+                    (input.accelerating, input.rotating, firing)
+                },
+            };
+        let mut trans = self.trans;
+        let mut velocity = self.velocity;
+
+        // =============================================================
+        // Apply the rotation
+        let rotation_velocity = if accelerating {
+            spec.rotation_velocity_accelerating
+        } else {
+            spec.rotation_velocity
+        };
+        let rotation_delta = dt * rotation_velocity;
+        match rotating {
+            Rotating::Still => {},
+            Rotating::Left  => trans.rotation += rotation_delta,
+            Rotating::Right => trans.rotation -= rotation_delta,
+        }
+
+        // =============================================================
+        // Apply the force
+        let st = physics::State {pos: trans.pos, v: velocity};
+        let st = physics::integrate(&ShipState{spec: spec, accelerating: accelerating, rotation: trans.rotation}, &st, dt);
+        velocity = st.v;
+        trans.pos = st.pos;
+        trans.pos = sspec.map.bound(trans.pos);
+
+        // =============================================================
+        // Add new bullet
+        if firing {
+            let shoot_from = spec.shoot_from.rotate(trans.rotation);
+            let bullet = Bullet {
+                spec: spec.bullet_spec,
+                trans: trans + shoot_from,
+                age: 0.,
+            };
+            actors.add(Actor::Bullet(bullet));
+        }
+        
+        let new = Ship {
+            spec: self.spec,
+            trans: trans,
+            velocity: velocity,
+            not_firing_for: not_firing_for,
+            accelerating: accelerating,
+            rotating: rotating,
+        };
+        Some(new)
+    }
+
+    fn render<'a>(&self, sspec: &StateSpec<'a>, renderer: &Renderer, trans: &Transform) -> SdlResult<()> {
+        let trans = trans.adjust(&self.trans);
+        let spec = sspec.specs[self.spec].is_ship();
+
+        // =============================================================
+        // Render ship
+        if self.accelerating {
+            try!(spec.sprite_accelerating.render(renderer, &trans));
+        } else {
+            try!(spec.sprite.render(renderer, &trans));
+        }
+
+        // =============================================================
+        // Debugging -- render bbox
+        spec.bbox.render(renderer, &trans)
+    }
+}
+
+// ---------------------------------------------------------------------
+// Shooter
+
+#[deriving(PartialEq, Clone, Copy)]
+pub struct ShooterSpec<'a> {
+    pub sprite: &'a Sprite<'a>,
+    pub trans: Transform,
+    pub bullet_spec: SpecId,
+    pub firing_rate: f64,
+}
+
+#[deriving(PartialEq, Clone, Copy, Show)]
+pub struct Shooter {
+    pub spec: SpecId,
+    pub time_since_fire: f64,
+}
+
+impl Shooter {
+    fn advance<'a>(&self, sspec: &StateSpec<'a>, actors: &mut Actors, _: Option<Input>, dt: f64) -> Option<Shooter> {
+        let spec = sspec.specs[self.spec].is_shooter();
+        let mut time_since_fire = self.time_since_fire + dt;
+        if time_since_fire > spec.firing_rate {
+            time_since_fire = 0.;
+            let bullet = Bullet {
+                spec: spec.bullet_spec,
+                trans: spec.trans,
+                age: 0.,
+            };
+            actors.add(Actor::Bullet(bullet));
+        }
+        Some(Shooter{spec: self.spec, time_since_fire: time_since_fire})
+    }
+
+    fn render<'a>(&self, sspec: &StateSpec<'a>, renderer: &Renderer, trans: &Transform) -> SdlResult<()> {
+        let spec = sspec.specs[self.spec].is_shooter();
+        spec.sprite.render(renderer, &trans.adjust(&spec.trans))
+    }
+}
+
+// ---------------------------------------------------------------------
+// State
+
+#[deriving(PartialEq, Clone, Copy)]
+pub struct StateSpec<'a> {
+    pub map: &'a Map<'a>,
+    pub specs: &'a [Spec<'a>],
+}
+
+#[deriving(PartialEq, Clone, Show)]
+pub struct Actors {
+    actors: HashMap<ActorId, Actor>,
+    count: ActorId,
+}
+
+impl Actors {
+    pub fn new() -> Actors {
+        Actors{actors: HashMap::new(), count: 0}
+    }
+
+    fn prepare_new(old: &Actors) -> Actors {
+        Actors{
+            actors: HashMap::with_capacity(old.actors.len()),
+            count: old.count,
+        }
+    }
+
+    pub fn add(&mut self, actor: Actor) -> ActorId {
+        let actor_id = self.count;
+        self.count += 1;
+        self.actors.insert(actor_id, actor);
+        actor_id
+    }
+
+    fn insert(&mut self, actor_id: ActorId, actor: Actor) {
+        self.actors.insert(actor_id, actor);
+    }
+
+    fn iter(&self) -> Entries<ActorId, Actor> {
+        self.actors.iter()
+    }
+
+    fn values(&self) -> Values<ActorId, Actor> {
+        self.actors.values()
+    }
+
+    pub fn get(&self, actor_id: ActorId) -> &Actor {
+        match self.actors.get(&actor_id) {
+            None => unreachable!(),
+            Some(actor) => actor,
+        }
+    }
+}
+
+#[deriving(PartialEq, Clone, Show)]
+pub struct State {
+    pub actors: Actors,
+}
+
+// ---------------------------------------------------------------------
+// Input
+
+#[deriving(PartialEq, Clone, Copy, Show)]
+pub enum Rotating {
+    Still,
+    Left,
+    Right,
+}
+
+#[deriving(PartialEq, Clone, Copy)]
+pub struct Input {
+    pub quit: bool,
+    pub accelerating: bool,
+    pub firing: bool,
+    pub rotating: Rotating,
+    pub paused: bool,
+}
+
+impl Input {
+    pub fn process_events(&mut self) {
+        loop {
+            match sdl2::event::poll_event() {
+                sdl2::event::Event::None =>
+                    break,
+                sdl2::event::Event::Quit(_) =>
+                    self.quit = true,
+                sdl2::event::Event::KeyDown(_, _, key, _, _, _) =>
+                    match key {
+                        sdl2::keycode::KeyCode::Left  => self.rotating = Rotating::Left,
+                        sdl2::keycode::KeyCode::Right => self.rotating = Rotating::Right,
+                        sdl2::keycode::KeyCode::Up    => self.accelerating = true,
+                        sdl2::keycode::KeyCode::X     => self.firing = true,
+                        sdl2::keycode::KeyCode::P     => self.paused = !self.paused,
+                        _                             => {},
+                    },
+                sdl2::event::Event::KeyUp(_, _, key, _, _, _) => {
+                    if self.accelerating && key == sdl2::keycode::KeyCode::Up {
+                        self.accelerating = false
+                    };
+                    if self.firing && key == sdl2::keycode::KeyCode::X {
+                        self.firing = false;
+                    };
+                    if self.rotating == Rotating::Left && key == sdl2::keycode::KeyCode::Left {
+                        self.rotating = Rotating::Still;
+                    };
+                    if self.rotating == Rotating::Right && key == sdl2::keycode::KeyCode::Right {
+                        self.rotating = Rotating::Still;
+                    };
+                },
+                _ => {},
+            }
+        };
+    }
+}
+
+#[deriving(PartialEq, Clone, Copy)]
+pub struct ActorInput {
+    pub actor: ActorId,
+    pub input: Input,
+}
+
+impl ActorInput {
+    fn lookup(inputs: &Vec<ActorInput>, actor_id: ActorId) -> Option<Input> {
+        for input in inputs.iter() {
+            if input.actor == actor_id { return Some(input.input) }
+        };
+        None
+    }
+}
+
+impl State {
+    pub fn advance<'a>(&self, spec: &StateSpec<'a>, inputs: &Vec<ActorInput>, dt: f64) -> State {
+        // First move everything, spawn new stuff
+        let mut advanced_actors = Actors::prepare_new(&self.actors);
+        for (actor_id, actor) in self.actors.iter() {
+            let actor_input = ActorInput::lookup(inputs, *actor_id);
+            match actor.advance(spec, &mut advanced_actors, actor_input, dt) {
+                None                 => {},
+                Some(advanced_actor) => { advanced_actors.insert(*actor_id, advanced_actor) },
+            }
+        };
+        
+        // Then compute interactions
+        let mut interacted_actors = Actors::prepare_new(&advanced_actors);
+        for (actor_id, actor) in advanced_actors.iter() {
+            match actor.interact(spec, &advanced_actors) {
+                None                   => {},
+                Some(interacted_actor) => { interacted_actors.insert(*actor_id, interacted_actor) },
+            }
+        };
+
+        // Done
+        State{
+            actors: interacted_actors,
+        }
+    }
+
+    pub fn render<'a>(&self, spec: &StateSpec<'a>, renderer: &Renderer, trans: &Transform) -> SdlResult<()> {
+        // Paint the background for the whole thing
+        try!(renderer.set_draw_color(Color::RGB(0x00, 0x00, 0x00)));
+        try!(spec.map.render(renderer, &trans.pos));
+        for actor in self.actors.values() {
+            try!(actor.render(spec, renderer, trans));
+        };
+        Ok(())
+    }
+}
 
 // ---------------------------------------------------------------------
 // Camera
@@ -103,8 +668,8 @@ struct Camera<'a> {
 
 impl<'a> Camera<'a> {
     #[inline]
-    fn adjust(&self, trans: &Transform) -> Transform {
-        *trans - self.pos
+    fn transform(&self) -> Transform {
+        Transform{pos: self.pos, rotation: 0.}
     }
 
     #[inline(always)]
@@ -143,450 +708,33 @@ impl<'a> Camera<'a> {
 }
 
 // ---------------------------------------------------------------------
-// Ship
-
-#[deriving(PartialEq, Clone, Copy)]
-enum Rotating {
-    Still,
-    Left,
-    Right,
-}
-
-#[deriving(PartialEq, Clone, Copy)]
-struct ShipSpec<'a> {
-    rotation_velocity: f64,
-    rotation_velocity_accelerating: f64,
-    acceleration: f64,
-    friction: f64,
-    gravity: f64,
-    sprite: &'a Sprite<'a>,
-    sprite_accelerating: &'a Sprite<'a>,
-    bullet_spec: &'a BulletSpec<'a>,
-    firing_interval: f64,
-    shoot_from: Vec2,
-    bbox: &'a BBox,
-}
+// ClientState
 
 #[deriving(PartialEq, Clone)]
-struct Ship<'a> {
-    spec: &'a ShipSpec<'a>,
-    trans: Transform,
-    velocity: Vec2,
-    bullets: Vec<Bullet<'a>>,
-    not_firing_for: f64,
-    accelerating: bool,
-    rotating: Rotating,
-}
-
-impl<'a> physics::Acceleration for Ship<'a> {
-    fn acceleration(&self, state: &physics::State) -> Vec2 {
-        let mut f = Vec2::zero();
-        // Acceleration
-        if self.accelerating {
-            f.x += self.trans.rotation.cos() * self.spec.acceleration;
-            // The sin is inverted because we push the opposite
-            // direction we're looking at.
-            f.y += -1. * self.trans.rotation.sin() * self.spec.acceleration;
-        }
-
-        // Gravity
-        f.y += self.spec.gravity;
-
-        // Friction
-        let friction = state.v * self.spec.friction;
-        f = f - friction;
-
-        // Done
-        f
-    }
-}
-
-impl<'a> Ship<'a> {
-    fn advance(&self, map: &Map, input: &Input, hits: uint, dt: f64) -> Ship<'a> {
-        let accelerating = input.accelerating;
-        let rotating = input.rotating;
-        let mut not_firing_for = self.not_firing_for + dt;
-        let firing = if input.firing && self.not_firing_for >= self.spec.firing_interval {
-            not_firing_for = 0.;
-            true
-        } else {
-            false
-        };
-        let mut trans = self.trans;
-        let mut velocity = self.velocity;
-
-        // =============================================================
-        // Apply the rotation
-        let rotation_velocity = if accelerating {
-            self.spec.rotation_velocity_accelerating
-        } else {
-            self.spec.rotation_velocity
-        };
-        let rotation_delta = dt * rotation_velocity;
-        match rotating {
-            Rotating::Still => {},
-            Rotating::Left  => trans.rotation += rotation_delta,
-            Rotating::Right => trans.rotation -= rotation_delta,
-        }
-
-        // =============================================================
-        // Apply the force
-        let st = physics::State {pos: trans.pos, v: velocity};
-        let st = physics::integrate(self, &st, dt);
-        velocity = st.v;
-        trans.pos = st.pos;
-        trans.pos = map.bound(trans.pos);
-
-        // =============================================================
-        // Advance the bullets
-        let mut bullets = Bullet::advance_bullets(&self.bullets, map, dt);
-
-        // =============================================================
-        // Add new bullet
-        if firing {
-            let shoot_from = self.spec.shoot_from.rotate(trans.rotation);
-            let bullet = Bullet {
-                spec: self.spec.bullet_spec,
-                trans: trans + shoot_from,
-                age: 0.,
-            };
-            bullets.push(bullet);
-        }
-
-        // =============================================================
-        // Decrease health if hit
-        if hits > 0 {
-            println!("Hits: {}", hits);
-        }
-        
-        Ship {
-            spec: self.spec,
-            trans: trans,
-            velocity: velocity,
-            bullets: bullets,
-            not_firing_for: not_firing_for,
-            accelerating: accelerating,
-            rotating: rotating,
-        }
-    }
-
-    fn render(&self, renderer: &Renderer, cam: &Camera) {
-        // =============================================================
-        // Render ship
-        let trans = cam.adjust(&self.trans);
-        if self.accelerating {
-            self.spec.sprite_accelerating.render(renderer, &trans).ok().unwrap()
-        } else {
-            self.spec.sprite.render(renderer, &trans).ok().unwrap()
-        }
-
-        // =============================================================
-        // Debugging -- render bbox
-        self.spec.bbox.render(renderer, cam, &self.trans);
-
-        // =============================================================
-        // Render bullets
-        for bullet in self.bullets.iter() {
-            bullet.render(renderer, cam);
-        }
-    }
-}
-
-// ---------------------------------------------------------------------
-// Bullets
-
-#[deriving(PartialEq, Clone, Copy)]
-struct BulletSpec<'a> {
-    sprite: &'a Sprite<'a>,
-    velocity: f64,
-    lifetime: f64,
-    bbox: &'a BBox,
-}
-
-#[deriving(PartialEq, Clone, Copy)]
-struct Bullet<'a> {
-    spec: &'a BulletSpec<'a>,
-    trans: Transform,
-    age: f64,
-}
-
-impl<'a> Bullet<'a> {
-    fn advance(&self, dt: f64) -> Bullet<'a> {
-        let pos = Vec2 {
-            x: self.trans.pos.x + (self.spec.velocity * self.trans.rotation.cos() * dt),
-            y: self.trans.pos.y + (-1. * self.spec.velocity * self.trans.rotation.sin() * dt),
-        };
-        Bullet {
-            trans: Transform{pos: pos, rotation: self.trans.rotation},
-            age: self.age + dt,
-            spec: self.spec,
-        }
-    }
-
-    fn advance_bullets(bullets: &Vec<Bullet<'a>>, map: &Map, dt: f64) -> Vec<Bullet<'a>> {
-        let mut new_bullets = Vec::with_capacity(bullets.len() + 1);
-        for bullet in bullets.iter() {
-            let new_bullet = bullet.advance(dt);
-            if new_bullet.alive(map) {
-                new_bullets.push(new_bullet)
-            }
-        };
-        new_bullets
-    }
-
-    fn alive(&self, map: &Map) -> bool {
-        self.trans.pos.x >= 0. && self.trans.pos.x <= map.w &&
-            self.trans.pos.y >= 0. && self.trans.pos.y <= map.h &&
-            self.age < self.spec.lifetime
-    }
-
-    fn render(&self, renderer: &Renderer, cam: &Camera) -> () {
-        self.spec.sprite.render(renderer, &cam.adjust(&self.trans)).ok().unwrap();
-        // Debugging -- render bbox
-        self.spec.bbox.render(renderer, cam, &self.trans);
-    }
-}
-
-// ---------------------------------------------------------------------
-// Shooter
-
-#[deriving(PartialEq, Clone, Copy)]
-struct ShooterSpec<'a> {
-    sprite: &'a Sprite<'a>,
-    trans: Transform,
-    bullet_spec: &'a BulletSpec<'a>,
-    firing_rate: f64,
-}
-
-#[deriving(PartialEq, Clone)]
-struct Shooter<'a> {
-    spec: &'a ShooterSpec<'a>,
-    time_since_fire: f64,
-    bullets: Vec<Bullet<'a>>,
-}
-
-impl<'a> Shooter<'a> {
-    fn advance(&self, map: &Map, dt: f64) -> Shooter<'a> {
-        let mut bullets = Bullet::advance_bullets(&self.bullets, map, dt);
-        let mut time_since_fire = self.time_since_fire + dt;
-        if time_since_fire > self.spec.firing_rate {
-            time_since_fire = 0.;
-            let bullet = Bullet {
-                spec: self.spec.bullet_spec,
-                trans: self.spec.trans,
-                age: 0.,
-            };
-            bullets.push(bullet);
-        }
-        Shooter{spec: self.spec, time_since_fire: time_since_fire, bullets: bullets}
-    }
-
-    fn render(&self, renderer: &Renderer, cam: &Camera) -> () {
-        self.spec.sprite.render(renderer, &cam.adjust(&self.spec.trans)).ok().unwrap();
-        for bullet in self.bullets.iter() {
-            bullet.render(renderer, cam);
-        }
-    }
-}
-
-// ---------------------------------------------------------------------
-// Maps
-
-#[deriving(PartialEq, Clone, Copy)]
-struct Map<'a> {
-    w: f64,
-    h: f64,
-    background_color: Color, 
-    background_texture: &'a Texture,
-}
-
-impl<'a> Map<'a> {
-    fn render(&self, renderer: &Renderer, cam: &Camera) -> () {
-        // Fill the whole screen with the background color
-        renderer.set_draw_color(self.background_color).ok().unwrap();
-        let rect = sdl2::rect::Rect {
-            x: 0, y: 0, w: SCREEN_WIDTH as i32, h: SCREEN_HEIGHT as i32
-        };
-        renderer.fill_rect(&rect).ok().unwrap();
-
-        // Fill with the background texture.  The assumption is that 4
-        // background images are needed to cover the entire screen:
-        // 
-        // map
-        // ┌──────────────────────────────────────────┐
-        // │                  ┊                   ┊   │
-        // │  cam             ┊                   ┊   │
-        // │  ┌─────────────────────┐             ┊   │
-        // │  │               ┊     │             ┊   │
-        // │  │             t ┊     │             ┊   │
-        // │┄┄│┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄│┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄│
-        // │  │               ┊     │             ┊   │
-        // │  └─────────────────────┘             ┊   │
-        // │                  ┊                   ┊   │
-        // └──────────────────────────────────────────┘
-
-        let bgr = self.background_texture.query().ok().unwrap();
-        let bgr_w = bgr.width as f64;
-        let bgr_h = bgr.height as f64;
-        let t = Vec2 {
-            x: bgr_w - (cam.pos.x % bgr_w),
-            y: bgr_h - (cam.pos.y % bgr_h),
-        };
-        let top_left = Vec2 {
-            x: t.x - bgr_w,
-            y: t.y - bgr_h,
-        };
-        let top_right = Vec2 {
-            x: t.x,
-            y: t.y - bgr_h,
-        };
-        let bottom_left = Vec2 {
-            x: t.x - bgr_w,
-            y: t.y,
-        };
-        let bottom_right = Vec2 {
-            x: t.x,
-            y: t.y,
-        };
-        let to_rect = |p: Vec2| -> Option<sdl2::rect::Rect> {
-            Some(sdl2::rect::Rect {
-                x: p.x as i32,
-                y: p.y as i32,
-                w: bgr.width as i32,
-                h: bgr.height as i32,
-            })
-        };
-        
-        renderer.copy(self.background_texture, None, to_rect(top_left)).ok().unwrap();
-        renderer.copy(self.background_texture, None, to_rect(top_right)).ok().unwrap();
-        renderer.copy(self.background_texture, None, to_rect(bottom_left)).ok().unwrap();
-        renderer.copy(self.background_texture, None, to_rect(bottom_right)).ok().unwrap();
-    }
-
-    fn bound(&self, p: Vec2) -> Vec2 {
-        // TODO handle points that are badly negative
-        fn f(n: f64, m: f64) -> f64 {
-            if n < 0. {
-                0.
-            } else if n > m {
-                m
-            } else {
-                n
-            }
-        };
-        Vec2{x: f(p.x, self.w), y: f(p.y, self.h)}
-    }
-
-    fn bound_rect(&self, p: Vec2, w: f64, h: f64) -> Vec2 {
-        fn f(n: f64, edge: f64, m: f64) -> f64 {
-            if n < 0. {
-                0.
-            } else if n + edge > m {
-                m - edge
-            } else {
-                n
-            }
-        };
-        Vec2{x: f(p.x, w, self.w), y: f(p.y, h, self.h)}
-    }
-}
-
-// ---------------------------------------------------------------------
-// Main
-
-#[deriving(PartialEq, Clone, Copy)]
-struct Input {
-    quit: bool,
-    accelerating: bool,
-    firing: bool,
-    rotating: Rotating,
-    paused: bool,
-}
-
-impl Input {
-    fn process_events(&mut self) {
-        loop {
-            match sdl2::event::poll_event() {
-                sdl2::event::Event::None =>
-                    break,
-                sdl2::event::Event::Quit(_) =>
-                    self.quit = true,
-                sdl2::event::Event::KeyDown(_, _, key, _, _, _) =>
-                    match key {
-                        sdl2::keycode::KeyCode::Left  => self.rotating = Rotating::Left,
-                        sdl2::keycode::KeyCode::Right => self.rotating = Rotating::Right,
-                        sdl2::keycode::KeyCode::Up    => self.accelerating = true,
-                        sdl2::keycode::KeyCode::X     => self.firing = true,
-                        sdl2::keycode::KeyCode::P     => self.paused = !self.paused,
-                        _                             => {},
-                    },
-                sdl2::event::Event::KeyUp(_, _, key, _, _, _) => {
-                    if self.accelerating && key == sdl2::keycode::KeyCode::Up {
-                        self.accelerating = false
-                    };
-                    if self.firing && key == sdl2::keycode::KeyCode::X {
-                        self.firing = false;
-                    };
-                    if self.rotating == Rotating::Left && key == sdl2::keycode::KeyCode::Left {
-                        self.rotating = Rotating::Still;
-                    };
-                    if self.rotating == Rotating::Right && key == sdl2::keycode::KeyCode::Right {
-                        self.rotating = Rotating::Still;
-                    };
-                },
-                _ => {},
-            }
-        };
-    }
-}
-
-#[deriving(PartialEq, Clone)]
-struct State<'a> {
-    map: &'a Map<'a>,
-    ship: Ship<'a>,
+struct ClientState<'a> {
+    state_spec: StateSpec<'a>,
+    state: State,
     camera: Camera<'a>,
-    shooters: Vec<Shooter<'a>>,
+    player_id: ActorId,
 }
 
-impl<'a> State<'a> {
-    fn advance(&self, input: &Input, dt: f64) -> State<'a> {
-        if !input.paused {
-            // Calculate hits
-            let mut hits = 0;
-            for i in range(0, self.shooters.len()) {
-                for bullet in self.shooters[i].bullets.iter() {
-                    if overlapping_bbox(self.ship.spec.bbox, &self.ship.trans, bullet.spec.bbox, &bullet.trans) {
-                        hits += 1;
-                    }
-                }
-            }
-            // Advance stuff
-            let ship = self.ship.advance(self.map, input, hits, dt);
-            let mut shooters = Vec::with_capacity(self.shooters.len());
-            for i in range(0, self.shooters.len()) {
-                shooters.push(self.shooters[i].advance(self.map, dt));
-            }
-            let camera = self.camera.advance(self.map, &ship, dt);
-            State{map: self.map, ship: ship, camera: camera, shooters: shooters}
-        } else {
-            self.clone()
+impl<'a> ClientState<'a> {
+    fn advance(&self, input: &Input, dt: f64) -> ClientState<'a> {
+        let inputs = vec![ActorInput{actor: self.player_id, input: *input}];
+        let state = self.state.advance(&self.state_spec, &inputs, dt);
+        let camera = {
+            let ship = match *(state.actors.get(self.player_id)) {
+                Actor::Ship(ref ship) => ship,
+                _                     => unreachable!(),
+            };
+            self.camera.advance(self.state_spec.map, ship, dt)
+        };
+        ClientState{
+            state_spec: self.state_spec,
+            state: state,
+            camera: camera,
+            player_id: self.player_id
         }
-    }
-
-    fn render(&self, renderer: &Renderer) {
-        // Paint the background for the whole thing
-        renderer.set_draw_color(Color::RGB(0x00, 0x00, 0x00)).ok().unwrap();
-        renderer.clear().ok().unwrap();
-        // Paint the map
-        self.map.render(renderer, &self.camera);
-        // Paint the ship
-        self.ship.render(renderer, &self.camera);
-        // Paint the shooters
-        for shooter in self.shooters.iter() {
-            shooter.render(renderer, &self.camera);
-        }
-        // GO
-        renderer.present();
     }
 
     fn run(self, renderer: &Renderer) {
@@ -624,7 +772,8 @@ impl<'a> State<'a> {
                 state = current;
             }
 
-            state.render(renderer);
+            state.state.render(&state.state_spec, renderer, &state.camera.transform()).ok().expect("Failed to render the state");
+            renderer.present();
         }
     }
 }
@@ -641,10 +790,13 @@ fn main() {
         sdl2::render::RenderDriverIndex::Auto,
         sdl2::render::ACCELERATED | sdl2::render::PRESENTVSYNC).ok().unwrap();
     renderer.set_logical_size((SCREEN_WIDTH as int), (SCREEN_HEIGHT as int)).ok().unwrap();
+
+    // Specs
     let planes_surface = sdl2_image::LoadSurface::from_file(&("assets/planes.png".parse()).unwrap()).ok().unwrap();
     planes_surface.set_color_key(true, Color::RGB(0xba, 0xfe, 0xca)).ok().unwrap();
     let planes_texture: &Texture = &renderer.create_texture_from_surface(&planes_surface).ok().unwrap();
-    let bullet_spec = &BulletSpec {
+    let mut specs = Vec::new();
+    let bullet_spec = BulletSpec {
         sprite: &Sprite {
             texture: planes_texture,
             rect: Rect{pos: Vec2{x: 424., y: 140.}, w: 3., h: 12.},
@@ -654,7 +806,7 @@ fn main() {
         velocity: 1000.,
         lifetime: 5000.,
         bbox: &BBox {
-            rects: vec![
+            rects: &[
                 Rect{
                     pos: Vec2{y: -1.5, x: -6.},
                     h: 3.,
@@ -662,63 +814,47 @@ fn main() {
                 }]
         },
     };
-    let ship_pos = Vec2 {x: SCREEN_WIDTH/2., y: SCREEN_HEIGHT/2.};
-    let ship = Ship {
-        spec: &ShipSpec {
-            rotation_velocity: 10.,
-            rotation_velocity_accelerating: 1.,
-            acceleration: 800.,
-            friction: 0.02,
-            gravity: 100.,
-            sprite: &Sprite{
-                texture: planes_texture,
-                rect: Rect{pos: Vec2{x: 128., y: 96.}, w: 30., h: 24.},
-                center: Vec2{x: 15., y: 12.},
-                angle: 90.,
-            },
-            sprite_accelerating: &Sprite {
-                texture: planes_texture,
-                rect: Rect{pos: Vec2{x: 88., y: 96.}, w: 30., h: 24.},
-                center: Vec2{x: 15., y: 12.},
-                angle: 90.,
-            },
-            bullet_spec: bullet_spec,
-            firing_interval: 1.,
-            shoot_from: Vec2{x: 18., y: 0.},
-            bbox: &BBox{
-                rects: vec![
-                    Rect{
-                        pos: Vec2{x: -12., y: -5.5},
-                        w: 25.,
-                        h: 11.
-                    },
-                    Rect{
-                        pos: Vec2{x: 0., y: -15.},
-                        w: 7.5,
-                        h: 30.
-                    }
-                    ]
-            },
+    let bullet_spec_id = 0;
+    specs.push(Spec::BulletSpec(bullet_spec));
+    let ship_spec = ShipSpec {
+        rotation_velocity: 10.,
+        rotation_velocity_accelerating: 1.,
+        acceleration: 800.,
+        friction: 0.02,
+        gravity: 100.,
+        sprite: &Sprite{
+            texture: planes_texture,
+            rect: Rect{pos: Vec2{x: 128., y: 96.}, w: 30., h: 24.},
+            center: Vec2{x: 15., y: 12.},
+            angle: 90.,
         },
-        trans: Transform {
-            pos: ship_pos,
-            rotation: 0.,
+        sprite_accelerating: &Sprite {
+            texture: planes_texture,
+            rect: Rect{pos: Vec2{x: 88., y: 96.}, w: 30., h: 24.},
+            center: Vec2{x: 15., y: 12.},
+            angle: 90.,
         },
-        velocity: Vec2 {x: 0., y: 0.},
-        bullets: Vec::new(),
-        not_firing_for: 100000.,
-        accelerating: false,
-        rotating: Rotating::Still,
+        bullet_spec: bullet_spec_id,
+        firing_interval: 1.,
+        shoot_from: Vec2{x: 18., y: 0.},
+        bbox: &BBox{
+            rects: &[
+                Rect{
+                    pos: Vec2{x: -12., y: -5.5},
+                    w: 25.,
+                    h: 11.
+                },
+                Rect{
+                    pos: Vec2{x: 0., y: -15.},
+                    w: 7.5,
+                    h: 30.
+                }
+                ]
+        },
     };
-    let map_surface = sdl2_image::LoadSurface::from_file(&("assets/background.png".parse()).unwrap()).ok().unwrap();
-    let map_texture = renderer.create_texture_from_surface(&map_surface).ok().unwrap();
-    let map = &Map {
-        w: SCREEN_WIDTH*10.,
-        h: SCREEN_HEIGHT*10.,
-        background_color: Color::RGB(0x58, 0xB7, 0xFF),
-        background_texture: &map_texture,
-    };
-    let shooter_spec = &ShooterSpec {
+    let ship_spec_id: SpecId = 1;
+    specs.push(Spec::ShipSpec(ship_spec));
+    let shooter_spec = ShooterSpec {
         sprite: &Sprite {
             texture: planes_texture,
             rect: Rect{pos: Vec2{x: 48., y: 248.}, w: 32., h: 24.},
@@ -729,36 +865,62 @@ fn main() {
             pos: Vec2{x: 1000., y: 200.},
             rotation: to_radians(270.),
         },
-        bullet_spec: bullet_spec,
-        firing_rate: 2000.,
+        bullet_spec: bullet_spec_id,
+        firing_rate: 2.,
     };
-    let state = State {
-        ship: ship,
+    let shooter_spec_id: SpecId = 2;
+    specs.push(Spec::ShooterSpec(shooter_spec));
+    let map_surface = sdl2_image::LoadSurface::from_file(&("assets/background.png".parse()).unwrap()).ok().unwrap();
+    let map_texture = renderer.create_texture_from_surface(&map_surface).ok().unwrap();
+    let map = &Map {
+        w: SCREEN_WIDTH*10.,
+        h: SCREEN_HEIGHT*10.,
+        background_color: Color::RGB(0x58, 0xB7, 0xFF),
+        background_texture: &map_texture,
+    };
+    let state_spec = StateSpec{
         map: map,
-        camera: Camera {
-            spec: &CameraSpec {
-                acceleration: 1.2,
-                h_padding: 220.,
-                v_padding: 220. * SCREEN_HEIGHT / SCREEN_WIDTH,
-            },
-            pos: Vec2{
-                x: ship_pos.x - SCREEN_WIDTH/2.,
-                y: ship_pos.y - SCREEN_HEIGHT/2.,
-            },
-            velocity: Vec2::zero(),
-        },
-        shooters: vec![
-            Shooter {
-                spec: shooter_spec,
-                time_since_fire: 0.,
-                bullets: Vec::new(),
-            }
-            ],
+        specs: specs.as_slice(),
     };
-    state.run(&renderer);
+
+    // Actors
+    let mut actors = Actors::new();
+    let ship_pos = Vec2 {x: SCREEN_WIDTH/2., y: SCREEN_HEIGHT/2.};
+    let player_id = actors.add(Actor::Ship(
+        Ship{
+            spec: ship_spec_id,
+            trans: Transform::pos(ship_pos),
+            velocity: Vec2::zero(),
+            not_firing_for: 100000.,
+            accelerating: false,
+            rotating: Rotating::Still,
+        }));
+    let _ = actors.add(Actor::Shooter(
+        Shooter{
+            spec: shooter_spec_id,
+            time_since_fire: 0.,
+        }));
+    let state = State{actors: actors};
+
+    // Camera
+    let camera = Camera{
+        spec: &CameraSpec {
+            acceleration: 1.2,
+            h_padding: 220.,
+            v_padding: 220. * SCREEN_HEIGHT / SCREEN_WIDTH,
+        },
+        pos: Vec2{
+            x: ship_pos.x - SCREEN_WIDTH/2.,
+            y: ship_pos.y - SCREEN_HEIGHT/2.,
+        },
+        velocity: Vec2::zero(),
+    };
+
+    let client_state = ClientState{
+        state_spec: state_spec,
+        state: state,
+        camera: camera,
+        player_id: player_id,
+    };
+    client_state.run(&renderer);
 }
-
-// fn main() {
-//     println!("Ciao")
-// }
-
