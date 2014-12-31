@@ -199,9 +199,16 @@ impl Actor {
     // Returns whether the actor is still alive
     fn advance<'a>(&self, sspec: &GameSpec<'a>, actors: &mut Actors, input: Option<Input>, dt: f64) -> Option<Actor> {
         match *self {
-            Actor::Ship(ref ship)       => ship.advance(sspec, actors, input, dt).map(|x| Actor::Ship(x)),
-            Actor::Shooter(ref shooter) => shooter.advance(sspec, actors, input, dt).map(|x| Actor::Shooter(x)),
-            Actor::Bullet(ref bullet)   => bullet.advance(sspec, actors, input, dt).map(|x| Actor::Bullet(x)),
+            Actor::Ship(ref ship) =>
+                ship.advance(sspec, actors, input, dt).map(|x| Actor::Ship(x)),
+            Actor::Shooter(ref shooter) => {
+                assert!(input.is_none());
+                shooter.advance(sspec, actors, dt).map(|x| Actor::Shooter(x))
+            },
+            Actor::Bullet(ref bullet) => {
+                assert!(input.is_none());
+                bullet.advance(sspec, actors, dt).map(|x| Actor::Bullet(x))
+            },
         }
     }
 
@@ -269,8 +276,7 @@ struct Bullet {
 }
 
 impl Bullet {
-    fn advance<'a>(&self, sspec: &GameSpec<'a>, _: &mut Actors, input: Option<Input>, dt: f64) -> Option<Bullet> {
-        assert!(input.is_none());
+    fn advance<'a>(&self, sspec: &GameSpec<'a>, _: &mut Actors, dt: f64) -> Option<Bullet> {
         let spec = sspec.specs[self.spec].is_bullet();
         let pos = Vec2 {
             x: self.trans.pos.x + (spec.velocity * self.trans.rotation.cos() * dt),
@@ -455,7 +461,7 @@ struct Shooter {
 }
 
 impl Shooter {
-    fn advance<'a>(&self, sspec: &GameSpec<'a>, actors: &mut Actors, _: Option<Input>, dt: f64) -> Option<Shooter> {
+    fn advance<'a>(&self, sspec: &GameSpec<'a>, actors: &mut Actors, dt: f64) -> Option<Shooter> {
         let spec = sspec.specs[self.spec].is_shooter();
         let mut time_since_fire = self.time_since_fire + dt;
         if time_since_fire > spec.firing_rate {
@@ -592,26 +598,26 @@ impl Input {
 }
 
 #[deriving(PartialEq, Clone, Copy)]
-struct ActorInput {
-    actor: ActorId,
+struct ShipInput {
+    ship: ActorId,
     input: Input,
 }
 
-impl ActorInput {
-    fn lookup(inputs: &Vec<ActorInput>, actor_id: ActorId) -> Option<Input> {
+impl ShipInput {
+    fn lookup(inputs: &Vec<ShipInput>, actor_id: ActorId) -> Option<Input> {
         for input in inputs.iter() {
-            if input.actor == actor_id { return Some(input.input) }
+            if input.ship == actor_id { return Some(input.input) }
         };
         None
     }
 }
 
 impl Game {
-    fn advance<'a>(&self, spec: &GameSpec<'a>, inputs: &Vec<ActorInput>, dt: f64) -> Game {
+    fn advance<'a>(&self, spec: &GameSpec<'a>, inputs: &Vec<ShipInput>, dt: f64) -> Game {
         // First move everything, spawn new stuff
         let mut advanced_actors = Actors::prepare_new(&self.actors);
         for (actor_id, actor) in self.actors.iter() {
-            let actor_input = ActorInput::lookup(inputs, *actor_id);
+            let actor_input = ShipInput::lookup(inputs, *actor_id);
             match actor.advance(spec, &mut advanced_actors, actor_input, dt) {
                 None                 => {},
                 Some(advanced_actor) => { advanced_actors.insert(*actor_id, advanced_actor) },
@@ -717,7 +723,7 @@ struct Client<'a> {
 
 impl<'a> Client<'a> {
     fn advance(&self, input: &Input, dt: f64) -> Client<'a> {
-        let inputs = vec![ActorInput{actor: self.player_id, input: *input}];
+        let inputs = vec![ShipInput{ship: self.player_id, input: *input}];
         let game = self.game.advance(&self.game_spec, &inputs, dt);
         let camera = {
             let ship = match *(game.actors.get(self.player_id)) {
