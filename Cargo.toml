@@ -4,9 +4,17 @@ name = "dogfights"
 version = "0.0.1"
 authors = [ "Francesco Mazzoli <f@mazzo.li>" ]
 
-[[bin]]
+[lib]
+name = "dogfights-lib"
+path = "src/game.rs"
 
+[[bin]]
 name = "dogfights"
+path = "src/dogfights.rs"
+
+[[bin]]
+name = "dogfights-server"
+path = "src/dogfights-server.rs"
 
 [dependencies.sdl2]
 # git = "https://github.com/AngryLawyer/rust-sdl2"

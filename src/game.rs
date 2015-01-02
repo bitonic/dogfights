@@ -1,6 +1,7 @@
 extern crate sdl2;
 extern crate sdl2_image;
 extern crate "rustc-serialize" as rustc_serialize;
+extern crate bincode;
 
 use std::num::FloatMath;
 use std::collections::HashMap;
@@ -16,8 +17,10 @@ use sdl2::render::{Renderer, Texture};
 use rustc_serialize::{Encodable, Encoder};
 
 use geometry::{to_radians, from_radians, Vec2, Rect, Transform};
-use physics;
-use network;
+
+pub mod geometry;
+pub mod physics;
+pub mod network;
 
 // ---------------------------------------------------------------------
 // Constants
