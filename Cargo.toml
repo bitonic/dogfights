@@ -9,9 +9,11 @@ authors = [ "Francesco Mazzoli <f@mazzo.li>" ]
 name = "dogfights"
 
 [dependencies.sdl2]
-git = "https://github.com/jameson-ernst/rust-sdl2"
+# git = "https://github.com/AngryLawyer/rust-sdl2"
+path = "/home/bitonic/src/rust-sdl2"
 
 [dependencies.sdl2_image]
+# git = "https://github.com/bitonic/rust-sdl2_image"
 path = "/home/bitonic/src/rust-sdl2_image"
 
 [dependencies]

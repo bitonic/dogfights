@@ -4,7 +4,6 @@ extern crate bincode;
 use std::io::net::udp::UdpSocket;
 use std::io::net::ip::{SocketAddr, ToSocketAddr};
 use std::collections::HashMap;
-use std::num::Bounded;
 use std::io::{MemWriter, MemReader, IoError, IoResult, IoErrorKind};
 use rustc_serialize::{Encodable, Decodable};
 use bincode::{EncoderWriter, DecoderReader};
@@ -21,16 +20,12 @@ struct Packet<A> {
 }
 
 #[deriving(PartialEq, Clone, Copy, Show, RustcDecodable, RustcEncodable)]
-struct Seq {
-    data: u32,
-}
+pub struct Seq(u32);
 
 impl Seq {
     #[inline]
-    fn zero() -> Seq { Seq{data: 0} }
-
     fn bump(&mut self) {
-        self.data += 1;
+        self.0 += 1;
     }
 }
 
@@ -39,7 +34,7 @@ impl Seq {
     // FIXME: actually wrap around
     #[inline]
     fn more_recent(x: Seq, y: Seq) -> Seq {
-        if x.data > y.data { x } else { y }
+        if x.0 > y.0 { x } else { y }
     }
 }
 
@@ -78,8 +73,8 @@ impl Client {
         let sock = try!(UdpSocket::bind(listen_on));
         Ok(Client{
             info: ConnInfo{
-                local_seq: Seq::zero(),
-                remote_seq: Seq::zero(),
+                local_seq: Seq(0),
+                remote_seq: Seq(0),
             },
             socket: sock,
             connected_to: connected_to,
@@ -95,15 +90,26 @@ impl Client {
         encode_and_send(&mut self.socket, self.connected_to, &packet)
     }
 
-    pub fn recv<'a, T: Decodable<DecoderReader<'a, MemReader>, IoError>>(&mut self) -> IoResult<T> {
-        let (addr, packet): (SocketAddr, Packet<T>) = try!(recv_and_decode(&mut self.socket));
-        let header = packet.header;
-        try!(check_proto_id(&header, "Client.recv: wrong proto id"));
-        if addr != self.connected_to {
-            other_io_error("Client.recv: got message from unknown sender")
-        } else {
-            self.info.remote_seq = Seq::more_recent(header.info.local_seq, self.info.remote_seq);
-            Ok(packet.body)
+    pub fn recv<'a, T: Decodable<DecoderReader<'a, MemReader>, IoError>>(&mut self) -> IoResult<IoResult<T>> {
+        let (addr, packet): (SocketAddr, IoResult<Packet<T>>) = try!(recv_and_decode(&mut self.socket));
+        match packet {
+            Err(err) =>
+                Ok(Err(err)),
+            Ok(packet) => {
+                let header = packet.header;
+                match check_proto_id(&header, "Client.recv: wrong proto id") {
+                    Err(err) =>
+                        Ok(Err(err)),
+                    Ok(()) => {
+                        if addr != self.connected_to {
+                            other_io_error("Client.recv: got message from unknown sender")
+                        } else {
+                            self.info.remote_seq = Seq::more_recent(header.info.local_seq, self.info.remote_seq);
+                            Ok(Ok(packet.body))
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -144,29 +150,40 @@ impl Server {
         }
     }
 
-    pub fn recv<'a, T: Decodable<DecoderReader<'a, MemReader>, IoError>>(&mut self) -> IoResult<(SocketAddr, T)> {
-        let (addr, packet): (SocketAddr, Packet<T>) = try!(recv_and_decode(&mut self.socket));
-        try!(check_proto_id(&packet.header, "Server.recv: wrong proto id"));
-        let conn = match self.clients.get(&addr) {
-            None => ServerConn{
-                info: ConnInfo{
-                    local_seq: Seq::zero(),
-                    remote_seq: packet.header.info.local_seq,
-                },
-                last_remote_seq: packet.header.info.remote_seq,
-            },
-            Some(conn) =>
-                ServerConn{
-                    info: ConnInfo{
-                        remote_seq: Seq::more_recent(packet.header.info.local_seq, conn.info.remote_seq),
-                        local_seq: conn.info.local_seq,
-                    },
-                    last_remote_seq: Seq::more_recent(packet.header.info.remote_seq, conn.last_remote_seq),
+    pub fn recv<'a, T: Decodable<DecoderReader<'a, MemReader>, IoError>>(&mut self) -> IoResult<(SocketAddr, IoResult<T>)> {
+        let (addr, packet): (SocketAddr, IoResult<Packet<T>>) = try!(recv_and_decode(&mut self.socket));
+        match packet {
+            Err(err) =>
+                Ok((addr, Err(err))),
+            Ok(packet) => {
+                match check_proto_id(&packet.header, "Server.recv: wrong proto id") {
+                    Err(err) =>
+                        Ok((addr, Err(err))),
+                    Ok(()) => {
+                        let conn = match self.clients.get(&addr) {
+                            None => ServerConn{
+                                info: ConnInfo{
+                                    local_seq: Seq(0),
+                                    remote_seq: packet.header.info.local_seq,
+                                },
+                                last_remote_seq: packet.header.info.remote_seq,
+                            },
+                            Some(conn) =>
+                                ServerConn{
+                                    info: ConnInfo{
+                                        remote_seq: Seq::more_recent(packet.header.info.local_seq, conn.info.remote_seq),
+                                        local_seq: conn.info.local_seq,
+                                    },
+                                    last_remote_seq: Seq::more_recent(packet.header.info.remote_seq, conn.last_remote_seq),
+                                }
+                        };
+                        let _ = self.clients.insert(addr, conn);
+                        Ok((addr, Ok(packet.body)))
+                    }
+                        }
                 }
-        };
-        let _ = self.clients.insert(addr, conn);
-        Ok((addr, packet.body))
-    }
+            }
+        }
 }
 
 // ---------------------------------------------------------------------
@@ -181,13 +198,12 @@ fn encode_and_send<'a, T: Encodable<EncoderWriter<'a, MemWriter>, IoError>>(sock
     }
 }
 
-fn recv_and_decode<'a, T: Decodable<DecoderReader<'a, MemReader>, IoError>>(sock: &mut UdpSocket) -> IoResult<(SocketAddr, T)> {
+fn recv_and_decode<'a, T: Decodable<DecoderReader<'a, MemReader>, IoError>>(sock: &mut UdpSocket) -> IoResult<(SocketAddr, IoResult<T>)> {
     let mut buf = [0, ..MAX_PACKET_SIZE];
     let (len, addr) = try!(sock.recv_from(&mut buf));
     let mut data = Vec::with_capacity(len);
     data.push_all(&buf);
-    let body = try!(bincode::decode(data));
-    Ok((addr, body))
+    Ok((addr, bincode::decode(data)))
 }
 
 fn other_io_error<T>(msg: &'static str) -> IoResult<T> {
@@ -244,29 +260,29 @@ fn test() {
 
     let body: int = 1234;
     client.send(&body);
-    assert!(client.info.local_seq == Seq{data: 1});
+    assert!(client.info.local_seq == Seq(1));
 
     let (recv_addr, recv_body): (SocketAddr, int) = server.recv().ok().unwrap();
     assert!(recv_body == body);
     assert!(recv_addr == client_addr);
     {
         let server_client_conn = server.clients.get(&client_addr).unwrap();
-        assert!(server_client_conn.info.remote_seq == Seq{data: 1});
-        assert!(server_client_conn.info.local_seq == Seq::zero());
-        assert!(server_client_conn.last_remote_seq == Seq::zero());
+        assert!(server_client_conn.info.remote_seq == Seq(1));
+        assert!(server_client_conn.info.local_seq == Seq(0));
+        assert!(server_client_conn.last_remote_seq == Seq(0));
     }
 
     let body: int = 4321;
     server.send(client_addr, &body);
     {
         let server_client_conn = server.clients.get(&client_addr).unwrap();
-        assert!(server_client_conn.info.remote_seq == Seq{data: 1});
-        assert!(server_client_conn.info.local_seq == Seq{data: 1});
-        assert!(server_client_conn.last_remote_seq == Seq::zero());
+        assert!(server_client_conn.info.remote_seq == Seq(1));
+        assert!(server_client_conn.info.local_seq == Seq(1));
+        assert!(server_client_conn.last_remote_seq == Seq(0));
     }
 
     let recv_body: int = client.recv().ok().unwrap();
     assert!(recv_body == body);
-    assert!(client.info.local_seq == Seq{data: 1});
-    assert!(client.info.remote_seq == Seq{data: 1});
+    assert!(client.info.local_seq == Seq(1));
+    assert!(client.info.remote_seq == Seq(1));
 }

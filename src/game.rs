@@ -4,12 +4,20 @@ extern crate "rustc-serialize" as rustc_serialize;
 
 use std::num::FloatMath;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::io::{IoResult};
+use std::io::net::ip::{SocketAddr, ToSocketAddr};
+use std::comm::{Sender, Receiver};
+use std::sync::{Arc, Mutex};
+use std::thread::{Thread, JoinGuard};
 use sdl2::SdlResult;
 use sdl2::pixels::Color;
 use sdl2::render::{Renderer, Texture};
+use rustc_serialize::{Encodable, Encoder};
+
 use geometry::{to_radians, from_radians, Vec2, Rect, Transform};
 use physics;
-use std::io::net::ip::SocketAddr;
+use network;
 
 // ---------------------------------------------------------------------
 // Constants
@@ -20,8 +28,6 @@ static SCREEN_HEIGHT: f64 = 600.;
 // 50 ms timesteps
 const TIME_STEP: f64 = 0.01;
 const MAX_FRAME_TIME: f64 = 0.250;
-
-const NUM_SNAPSHOTS: uint = 64;
 
 // ---------------------------------------------------------------------
 // Bounding boxes
@@ -191,7 +197,7 @@ impl<'a> Map<'a> {
 
 type ActorId = uint;
 
-#[deriving(PartialEq, Clone, Copy, Show)]
+#[deriving(PartialEq, Clone, Copy, Show, RustcEncodable, RustcDecodable)]
 enum Actor {
     Ship(Ship),
     Shooter(Shooter),
@@ -431,6 +437,24 @@ impl Camera {
 }
 
 impl Ship {
+    fn new(spec_id: SpecId, pos: Vec2) -> Ship {
+        Ship{
+            spec: spec_id,
+            trans: Transform::pos(pos),
+            velocity: Vec2::zero(),
+            not_firing_for: 100000.,
+            accelerating: false,
+            rotating: Rotating::Still,
+            camera: Camera{
+                pos: Vec2{
+                    x: pos.x - SCREEN_WIDTH/2.,
+                    y: pos.y - SCREEN_HEIGHT/2.,
+                },
+                velocity: Vec2::zero(),
+            }
+        }
+    }
+
     fn advance<'a>(&self, sspec: &GameSpec<'a>, actors: &mut Actors, input: Option<Input>, dt: f64) -> Option<Ship> {
         let spec = sspec.specs[self.spec].is_ship();
         let mut not_firing_for = self.not_firing_for + dt;
@@ -449,7 +473,6 @@ impl Ship {
             };
         let mut trans = self.trans;
         let mut velocity = self.velocity;
-        let mut camera = self.camera;
 
         // =============================================================
         // Apply the rotation
@@ -475,7 +498,7 @@ impl Ship {
 
         // =============================================================
         // Move the camera
-        camera = self.camera.advance(sspec, velocity, trans, dt);
+        let camera = self.camera.advance(sspec, velocity, trans, dt);
 
         // =============================================================
         // Add new bullet
@@ -565,6 +588,8 @@ impl Shooter {
 struct GameSpec<'a> {
     map: &'a Map<'a>,
     camera_spec: &'a CameraSpec,
+    ship_spec: SpecId,
+    shooter_spec: SpecId,
     specs: &'a [Spec<'a>],
 }
 
@@ -572,6 +597,15 @@ struct GameSpec<'a> {
 struct Actors {
     actors: HashMap<ActorId, Actor>,
     count: ActorId,
+}
+
+impl<E, S: Encoder<E>> Encodable<S, E> for Actors {
+    fn encode(&self, s: &mut S) -> Result<(), E> {
+        for pair in self.actors.iter() {
+            try!(pair.encode(s));
+        }
+        self.count.encode(s)
+    }
 }
 
 impl Actors {
@@ -605,7 +639,7 @@ impl Actors {
     }
 }
 
-#[deriving(PartialEq, Clone, Show)]
+#[deriving(PartialEq, Clone, Show, RustcEncodable)]
 struct Game {
     actors: Actors,
 }
@@ -717,6 +751,11 @@ impl Game {
         };
         Ok(())
     }
+
+    fn add_ship<'a>(&mut self, spec: &GameSpec<'a>) -> ActorId {
+        let ship_pos = Vec2 {x: SCREEN_WIDTH/2., y: SCREEN_HEIGHT/2.};
+        self.actors.add(Actor::Ship(Ship::new(spec.ship_spec, ship_pos)))
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -724,16 +763,132 @@ impl Game {
 
 type SnapshotId = uint;
 
+#[deriving(PartialEq, Clone)]
 struct Server<'a> {
-    game_spec: GameSpec<'a>,
-    snapshots: [Game, ..NUM_SNAPSHOTS],
-    snapshot_num: SnapshotId,
-    clients: HashMap<SocketAddr, ClientInfo>,
+    game_spec: &'a GameSpec<'a>,
+    game: Game,
+    clients: HashMap<SocketAddr, ActorId>,
 }
 
-struct ClientInfo {
-    acked_snapshot: SnapshotId,
-    ship_id: ActorId,
+struct Message {
+    from: SocketAddr,
+    input: Input,
+}
+
+impl<'a> Server<'a> {
+    fn should_quit() -> bool {
+        loop {
+            match sdl2::event::poll_event() {
+                sdl2::event::Event::None    => break,
+                sdl2::event::Event::Quit(_) => return true,
+                _                           => {},
+            }
+        };
+        false
+    }
+
+    fn new(spec: &'a GameSpec<'a>, game: Game) -> Server<'a> {
+        Server{
+            game_spec: spec,
+            game: game,
+            clients: HashMap::new(),
+        }
+    }
+
+    fn worker(queue: Sender<Message>, server_mutex: Arc<Mutex<network::Server>>) -> ! {
+        loop {
+            println!("Worker looping");
+            let (addr, input): (SocketAddr, IoResult<Input>) = {
+                let mut server = server_mutex.lock().unwrap();
+                server.recv().ok().expect("Server.worker: Could not receive")
+            };
+            match input {
+                Err(err) =>
+                    println!("Server.worker: couldn't decode message: {}", err),
+                Ok(input) => {
+                    let msg = Message{from: addr, input: input};
+                    queue.send(msg)
+                }
+            }
+        }
+    }
+
+    // FIXME: static bound on the messages we can get, to keep up with
+    // network
+    fn drain(queue: &Receiver<Message>) -> Vec<Message> {
+        let mut vec = Vec::new();
+        loop {
+            let msg = queue.try_recv();
+            match msg {
+                // FIXME: handle disconnections
+                Err(_)  => break,
+                Ok(msg) => vec.push(msg),
+            }
+        };
+        vec
+    }
+
+    fn prepare_inputs(&mut self, msgs: &Vec<Message>) -> Vec<ShipInput> {
+        let mut inputs = Vec::new();
+        for msg in msgs.iter() {
+            match self.clients.entry(msg.from) {
+                Entry::Occupied(entry) =>
+                    inputs.push(ShipInput{ship: *entry.get(), input: msg.input}),
+                Entry::Vacant(entry) => {
+                    let ship_id = self.game.add_ship(self.game_spec);
+                    let _ = entry.set(ship_id);
+                }
+            }
+        };
+        inputs
+    }
+
+    fn broadcast_game(&self, server_mutex: Arc<Mutex<network::Server>>) -> IoResult<()> {
+        // FIXME: encode once
+        let mut server = server_mutex.lock().unwrap();
+        for addr in self.clients.keys() {
+            try!(server.send(*addr, &self.game));
+        };
+        Ok(())
+    }
+
+    fn run<A: ToSocketAddr>(self, addr: &A) {
+        let addr = addr.to_socket_addr().ok().expect("Server.run: could not get SocketAddr");
+        let server = network::Server::new(addr).ok().expect("Server.worker: Could not create network server");
+        let server_local_mutex = Arc::new(Mutex::new(server));
+        let server_remote_mutex = server_local_mutex.clone();
+        let (tx, rx) = channel();
+        let guard: JoinGuard<()> = Thread::spawn(move || {
+            Server::worker(tx, server_remote_mutex)
+        });
+        guard.detach();
+
+        let wait_ms = (TIME_STEP * 1000.) as uint;
+        let mut state = self;
+        loop {
+            let quit = Server::should_quit();
+            if quit { println!("Server quitting!"); break };
+
+            let inputs = Server::drain(&rx);
+            let inputs = state.prepare_inputs(&inputs);
+            state.game = state.game.advance(state.game_spec, &inputs, TIME_STEP);
+            state.broadcast_game(server_local_mutex.clone()).ok().expect("Couldn't broadcast messages");
+
+            // FIXME: maybe time more precisely -- e.g. take into
+            // account the time it took to generate the state
+            sdl2::timer::delay(wait_ms);
+        }
+    }
+}
+
+pub fn server<A: ToSocketAddr>(addr: &A) {
+    let renderer = init_sdl();
+    game_spec(&renderer, |spec| {
+        // Actors
+        let game = Game{actors: Actors::new()};
+        let server = Server::new(spec, game);
+        server.run(addr);
+    })
 }
 
 // ---------------------------------------------------------------------
@@ -741,7 +896,7 @@ struct ClientInfo {
 
 #[deriving(PartialEq, Clone)]
 struct Client<'a> {
-    game_spec: GameSpec<'a>,
+    game_spec: &'a GameSpec<'a>,
     game: Game,
     player_id: ActorId,
 }
@@ -749,7 +904,7 @@ struct Client<'a> {
 impl<'a> Client<'a> {
     fn advance(&self, input: &Input, dt: f64) -> Client<'a> {
         let inputs = vec![ShipInput{ship: self.player_id, input: *input}];
-        let game = self.game.advance(&self.game_spec, &inputs, dt);
+        let game = self.game.advance(self.game_spec, &inputs, dt);
         Client{
             game_spec: self.game_spec,
             game: game,
@@ -793,13 +948,39 @@ impl<'a> Client<'a> {
             }
 
             let camera = state.game.actors.get(state.player_id).is_ship().camera;
-            state.game.render(&state.game_spec, renderer, &camera.transform()).ok().expect("Failed to render the state");
+            state.game.render(state.game_spec, renderer, &camera.transform()).ok().expect("Failed to render the state");
             renderer.present();
         }
     }
 }
 
 pub fn client() {
+    let renderer = init_sdl();
+    game_spec(&renderer, |spec| {
+        // Actors
+        let mut actors = Actors::new();
+        let ship_pos = Vec2 {x: SCREEN_WIDTH/2., y: SCREEN_HEIGHT/2.};
+        let player_id = actors.add(Actor::Ship(Ship::new(spec.ship_spec, ship_pos)));
+        let _ = actors.add(Actor::Shooter(
+            Shooter{
+                spec: spec.shooter_spec,
+                time_since_fire: 0.,
+            }));
+        let game = Game{actors: actors};
+
+        let client = Client{
+            game_spec: spec,
+            game: game,
+            player_id: player_id,
+        };
+        client.run(&renderer);
+    })
+}
+
+// ---------------------------------------------------------------------
+// Init
+
+fn init_sdl() -> Renderer {
     sdl2::init(sdl2::INIT_VIDEO);
     let window = sdl2::video::Window::new(
         "Dogfights",
@@ -811,15 +992,19 @@ pub fn client() {
         sdl2::render::RenderDriverIndex::Auto,
         sdl2::render::ACCELERATED | sdl2::render::PRESENTVSYNC).ok().unwrap();
     renderer.set_logical_size((SCREEN_WIDTH as int), (SCREEN_HEIGHT as int)).ok().unwrap();
+    renderer
+}
 
+fn game_spec<T, F: FnOnce(&GameSpec) -> T>(renderer: &Renderer, cont: F) -> T {
     // Specs
-    let planes_surface = sdl2_image::LoadSurface::from_file(&("assets/planes.png".parse()).unwrap()).ok().unwrap();
+    let planes_surface: sdl2::surface::Surface =
+        sdl2_image::LoadSurface::from_file(&("assets/planes.png".parse()).unwrap()).ok().unwrap();
     planes_surface.set_color_key(true, Color::RGB(0xba, 0xfe, 0xca)).ok().unwrap();
-    let planes_texture: &Texture = &renderer.create_texture_from_surface(&planes_surface).ok().unwrap();
+    let planes_texture = renderer.create_texture_from_surface(&planes_surface).ok().unwrap();
     let mut specs = Vec::new();
     let bullet_spec = BulletSpec {
         sprite: &Sprite {
-            texture: planes_texture,
+            texture: &planes_texture,
             rect: Rect{pos: Vec2{x: 424., y: 140.}, w: 3., h: 12.},
             center: Vec2{x: 1., y: 6.},
             angle: 90.,
@@ -844,13 +1029,13 @@ pub fn client() {
         friction: 0.02,
         gravity: 100.,
         sprite: &Sprite{
-            texture: planes_texture,
+            texture: &planes_texture,
             rect: Rect{pos: Vec2{x: 128., y: 96.}, w: 30., h: 24.},
             center: Vec2{x: 15., y: 12.},
             angle: 90.,
         },
         sprite_accelerating: &Sprite {
-            texture: planes_texture,
+            texture: &planes_texture,
             rect: Rect{pos: Vec2{x: 88., y: 96.}, w: 30., h: 24.},
             center: Vec2{x: 15., y: 12.},
             angle: 90.,
@@ -877,7 +1062,7 @@ pub fn client() {
     specs.push(Spec::ShipSpec(ship_spec));
     let shooter_spec = ShooterSpec {
         sprite: &Sprite {
-            texture: planes_texture,
+            texture: &planes_texture,
             rect: Rect{pos: Vec2{x: 48., y: 248.}, w: 32., h: 24.},
             center: Vec2{x: 16., y: 12.},
             angle: 90.,
@@ -904,43 +1089,11 @@ pub fn client() {
         h_padding: 220.,
         v_padding: 220. * SCREEN_HEIGHT / SCREEN_WIDTH,
     };
-    let game_spec = GameSpec{
+    cont(&GameSpec{
         map: map,
         camera_spec: camera_spec,
+        ship_spec: ship_spec_id,
+        shooter_spec: shooter_spec_id,
         specs: specs.as_slice(),
-    };
-
-    // Actors
-    let mut actors = Actors::new();
-    let ship_pos = Vec2 {x: SCREEN_WIDTH/2., y: SCREEN_HEIGHT/2.};
-    let player_id = actors.add(Actor::Ship(
-        Ship{
-            spec: ship_spec_id,
-            trans: Transform::pos(ship_pos),
-            velocity: Vec2::zero(),
-            not_firing_for: 100000.,
-            accelerating: false,
-            rotating: Rotating::Still,
-            camera: Camera{
-                pos: Vec2{
-                    x: ship_pos.x - SCREEN_WIDTH/2.,
-                    y: ship_pos.y - SCREEN_HEIGHT/2.,
-                },
-                velocity: Vec2::zero(),
-                
-            }
-        }));
-    let _ = actors.add(Actor::Shooter(
-        Shooter{
-            spec: shooter_spec_id,
-            time_since_fire: 0.,
-        }));
-    let game = Game{actors: actors};
-
-    let client = Client{
-        game_spec: game_spec,
-        game: game,
-        player_id: player_id,
-    };
-    client.run(&renderer);
+    })
 }

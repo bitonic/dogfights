@@ -8,5 +8,6 @@ pub mod physics;
 pub mod game;
 pub mod network;
 
-fn main() { game::client() }
+// fn main() { game::client() }
+fn main() { game::server(&"127.0.0.1:10000") }
 // fn main() {}
