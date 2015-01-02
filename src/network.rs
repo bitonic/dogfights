@@ -4,7 +4,7 @@ extern crate bincode;
 use std::io::net::udp::UdpSocket;
 use std::io::net::ip::{SocketAddr, ToSocketAddr};
 use std::collections::HashMap;
-use std::io::{MemWriter, MemReader, IoError, IoResult, IoErrorKind};
+use std::io::{IoError, IoResult, IoErrorKind, BufWriter, BufReader};
 use rustc_serialize::{Encodable, Decodable};
 use bincode::{EncoderWriter, DecoderReader};
 
@@ -63,6 +63,7 @@ pub struct Client {
     connected_to: SocketAddr,
     socket: UdpSocket,
     info: ConnInfo,
+    buf: [u8, ..MAX_PACKET_SIZE],
 }
 
 // FIXME: we shouldn't allocate the buffers on the heap, but it's a mess
@@ -78,20 +79,21 @@ impl Client {
             },
             socket: sock,
             connected_to: connected_to,
+            buf: [0, ..MAX_PACKET_SIZE],
         })
     }
 
-    pub fn send<'a, T: Encodable<EncoderWriter<'a, MemWriter>, IoError>>(&mut self, body: &T) -> IoResult<()> {
+    pub fn send<T: for<'a, 'b> Encodable<EncoderWriter<'a, BufWriter<'b>>, IoError>>(&mut self, body: &T) -> IoResult<()> {
         self.info.local_seq.bump();
         let packet = Packet {
             header: Header::new(self.info),
             body: body,
         };
-        encode_and_send(&mut self.socket, self.connected_to, &packet)
+        encode_and_send(&mut self.socket, &mut self.buf, self.connected_to, &packet)
     }
 
-    pub fn recv<'a, T: Decodable<DecoderReader<'a, MemReader>, IoError>>(&mut self) -> IoResult<IoResult<T>> {
-        let (addr, packet): (SocketAddr, IoResult<Packet<T>>) = try!(recv_and_decode(&mut self.socket));
+    pub fn recv<T: for<'a, 'b>Decodable<DecoderReader<'a, BufReader<'b>>, IoError>>(&mut self) -> IoResult<IoResult<T>> {
+        let (addr, packet): (SocketAddr, IoResult<Packet<T>>) = try!(recv_and_decode(&mut self.socket, &mut self.buf));
         match packet {
             Err(err) =>
                 Ok(Err(err)),
@@ -117,6 +119,7 @@ impl Client {
 pub struct Server {
     socket: UdpSocket,
     clients: HashMap<SocketAddr, ServerConn>,
+    buf: [u8, ..MAX_PACKET_SIZE],
 }
 
 struct ServerConn {
@@ -131,11 +134,12 @@ impl Server {
         let sock = try!(UdpSocket::bind(addr));
         Ok(Server{
             socket: sock,
-            clients: HashMap::new()
+            clients: HashMap::new(),
+            buf: [0, ..MAX_PACKET_SIZE],
         })
     }
 
-    pub fn send<'a, T: Encodable<EncoderWriter<'a, MemWriter>, IoError>>(&mut self, addr: SocketAddr, body: &T) -> IoResult<()> {
+    pub fn send<T: for<'a, 'b> Encodable<EncoderWriter<'a, BufWriter<'b>>, IoError>>(&mut self, addr: SocketAddr, body: &T) -> IoResult<()> {
         match self.clients.get_mut(&addr) {
             None =>
                 other_io_error("Server.send: Sending to unknown client"),
@@ -145,13 +149,13 @@ impl Server {
                     header: Header::new(conn.info),
                     body: body
                 };
-                encode_and_send(&mut self.socket, addr, &packet)
+                encode_and_send(&mut self.socket, &mut self.buf, addr, &packet)
             }
         }
     }
 
-    pub fn recv<'a, T: Decodable<DecoderReader<'a, MemReader>, IoError>>(&mut self) -> IoResult<(SocketAddr, IoResult<T>)> {
-        let (addr, packet): (SocketAddr, IoResult<Packet<T>>) = try!(recv_and_decode(&mut self.socket));
+    pub fn recv<T: for<'a, 'b> Decodable<DecoderReader<'a, BufReader<'b>>, IoError>>(&mut self) -> IoResult<(SocketAddr, IoResult<T>)> {
+        let (addr, packet): (SocketAddr, IoResult<Packet<T>>) = try!(recv_and_decode(&mut self.socket, &mut self.buf));
         match packet {
             Err(err) =>
                 Ok((addr, Err(err))),
@@ -180,30 +184,30 @@ impl Server {
                         let _ = self.clients.insert(addr, conn);
                         Ok((addr, Ok(packet.body)))
                     }
-                        }
                 }
             }
         }
+    }
 }
 
 // ---------------------------------------------------------------------
 // Utils
 
-fn encode_and_send<'a, T: Encodable<EncoderWriter<'a, MemWriter>, IoError>>(sock: &mut UdpSocket, addr: SocketAddr, body: T) -> IoResult<()> {
-    let data = try!(bincode::encode(&body));
-    if data.len() > MAX_PACKET_SIZE {
-        other_io_error("encode_and_send: packet too large")
-    } else {
-        sock.send_to(data.as_slice(), addr)
-    }
+fn encode_and_send<T: for<'a, 'b> Encodable<EncoderWriter<'a, BufWriter<'b>>, IoError>>(sock: &mut UdpSocket, buf: &mut [u8], addr: SocketAddr, body: &T) -> IoResult<()> {
+    let len = {
+        let mut w = BufWriter::new(buf);
+        try!(bincode::encode_into(&body, &mut w));
+        (try!(w.tell()) as uint)
+    };
+    sock.send_to(buf[0..len], addr)
 }
 
-fn recv_and_decode<'a, T: Decodable<DecoderReader<'a, MemReader>, IoError>>(sock: &mut UdpSocket) -> IoResult<(SocketAddr, IoResult<T>)> {
-    let mut buf = [0, ..MAX_PACKET_SIZE];
-    let (len, addr) = try!(sock.recv_from(&mut buf));
-    let mut data = Vec::with_capacity(len);
-    data.push_all(&buf);
-    Ok((addr, bincode::decode(data)))
+// FIXME: this will return an external IoResult if the buffer is too
+// small, but we don't want to crash!
+fn recv_and_decode<T: for<'a, 'b>Decodable<DecoderReader<'a, BufReader<'b>>, IoError>>(sock: &mut UdpSocket, buf: &mut [u8]) -> IoResult<(SocketAddr, IoResult<T>)> {
+    let (_, addr) = try!(sock.recv_from(buf));
+    let mut r = BufReader::new(buf);
+    Ok((addr, bincode::decode_from(&mut r)))
 }
 
 fn other_io_error<T>(msg: &'static str) -> IoResult<T> {
@@ -262,8 +266,8 @@ fn test() {
     client.send(&body);
     assert!(client.info.local_seq == Seq(1));
 
-    let (recv_addr, recv_body): (SocketAddr, int) = server.recv().ok().unwrap();
-    assert!(recv_body == body);
+    let (recv_addr, recv_body): (SocketAddr, IoResult<int>) = server.recv().ok().unwrap();
+    assert!(recv_body.ok().unwrap() == body);
     assert!(recv_addr == client_addr);
     {
         let server_client_conn = server.clients.get(&client_addr).unwrap();
@@ -281,8 +285,8 @@ fn test() {
         assert!(server_client_conn.last_remote_seq == Seq(0));
     }
 
-    let recv_body: int = client.recv().ok().unwrap();
-    assert!(recv_body == body);
+    let recv_body: IoResult<int> = client.recv().ok().unwrap();
+    assert!(recv_body.ok().unwrap() == body);
     assert!(client.info.local_seq == Seq(1));
     assert!(client.info.remote_seq == Seq(1));
 }

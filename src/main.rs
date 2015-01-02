@@ -1,3 +1,4 @@
+#![feature(slicing_syntax)]
 extern crate sdl2;
 extern crate sdl2_image;
 extern crate "rustc-serialize" as rustc_serialize;
@@ -760,6 +761,18 @@ impl Game {
         self.actors.add(Actor::Ship(Ship::new(spec.ship_spec, ship_pos)))
     }
 }
+
+// ---------------------------------------------------------------------
+// Remote client
+
+// #[deriving(PartialEq, Clone)]
+// struct RemoteClient<'a> {
+//     game_spec: &'a GameSpec<'a>
+// }
+
+// impl<'a> RemoteClient<'a> {
+//     fn run<A: ToSocketAddr>(
+// }
 
 // ---------------------------------------------------------------------
 // Server
