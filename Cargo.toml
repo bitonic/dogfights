@@ -6,7 +6,7 @@ authors = [ "Francesco Mazzoli <f@mazzo.li>" ]
 
 [lib]
 name = "dogfights-lib"
-path = "src/game.rs"
+path = "src/main.rs"
 
 [[bin]]
 name = "dogfights"
