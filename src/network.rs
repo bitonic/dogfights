@@ -5,6 +5,7 @@ use std::io::net::udp::UdpSocket;
 use std::io::net::ip::{SocketAddr, ToSocketAddr};
 use std::collections::HashMap;
 use std::io::{IoError, IoResult, IoErrorKind, BufWriter, BufReader};
+use std::sync::{Arc, Mutex};
 use rustc_serialize::{Encodable, Decodable};
 use bincode::{EncoderWriter, DecoderReader};
 
@@ -94,34 +95,27 @@ impl Client {
 
     pub fn recv<T: for<'a, 'b>Decodable<DecoderReader<'a, BufReader<'b>>, IoError>>(&mut self) -> IoResult<IoResult<T>> {
         let (addr, packet): (SocketAddr, IoResult<Packet<T>>) = try!(recv_and_decode(&mut self.socket, &mut self.buf));
-        match packet {
-            Err(err) =>
-                Ok(Err(err)),
-            Ok(packet) => {
-                let header = packet.header;
-                match check_proto_id(&header, "Client.recv: wrong proto id") {
-                    Err(err) =>
-                        Ok(Err(err)),
-                    Ok(()) => {
-                        if addr != self.connected_to {
-                            other_io_error("Client.recv: got message from unknown sender")
-                        } else {
-                            self.info.remote_seq = Seq::more_recent(header.info.local_seq, self.info.remote_seq);
-                            Ok(Ok(packet.body))
-                        }
-                    }
+        Ok(packet.and_then(move |packet| {
+            let header = packet.header;
+            check_proto_id(&header, "Client.recv: wrong proto id").and_then(move |_| {
+                if addr != self.connected_to {
+                    other_io_error("Client.recv: got message from unknown sender")
+                } else {
+                    self.info.remote_seq = Seq::more_recent(header.info.local_seq, self.info.remote_seq);
+                    Ok(packet.body)
                 }
-            }
-        }
+            })}))
     }
 }
 
+#[deriving(Clone)]
 pub struct Server {
     socket: UdpSocket,
-    clients: HashMap<SocketAddr, ServerConn>,
-    buf: [u8, ..MAX_PACKET_SIZE],
+    clients: Arc<Mutex<HashMap<SocketAddr, ServerConn>>>,
 }
 
+// FIXME: clean up inactive connections
+#[deriving(Copy, Clone)]
 struct ServerConn {
     // The last remote_seq received from the client.  This tells us
     // what's the last message we know the client received.
@@ -134,58 +128,63 @@ impl Server {
         let sock = try!(UdpSocket::bind(addr));
         Ok(Server{
             socket: sock,
-            clients: HashMap::new(),
-            buf: [0, ..MAX_PACKET_SIZE],
+            clients: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
     pub fn send<T: for<'a, 'b> Encodable<EncoderWriter<'a, BufWriter<'b>>, IoError>>(&mut self, addr: SocketAddr, body: &T) -> IoResult<()> {
-        match self.clients.get_mut(&addr) {
-            None =>
-                other_io_error("Server.send: Sending to unknown client"),
-            Some(conn) => {
-                conn.info.local_seq.bump();
-                let packet = Packet{
-                    header: Header::new(conn.info),
-                    body: body
-                };
-                encode_and_send(&mut self.socket, &mut self.buf, addr, &packet)
-            }
-        }
+        let conn_info = try!({
+            let mut clients = self.clients.lock().unwrap();
+            match clients.get_mut(&addr) {
+                None =>
+                    other_io_error("Server.send: Sending to unknown client"),
+                Some(conn) => {
+                    conn.info.local_seq.bump();
+                    Ok(conn.info)
+                }
+            }});
+        let packet = Packet{
+            header: Header::new(conn_info),
+            body: body
+        };
+        let mut buf = [0, ..MAX_PACKET_SIZE];
+        encode_and_send(&mut self.socket, &mut buf, addr, &packet)
     }
 
     pub fn recv<T: for<'a, 'b> Decodable<DecoderReader<'a, BufReader<'b>>, IoError>>(&mut self) -> IoResult<(SocketAddr, IoResult<T>)> {
-        let (addr, packet): (SocketAddr, IoResult<Packet<T>>) = try!(recv_and_decode(&mut self.socket, &mut self.buf));
-        match packet {
-            Err(err) =>
-                Ok((addr, Err(err))),
-            Ok(packet) => {
-                match check_proto_id(&packet.header, "Server.recv: wrong proto id") {
-                    Err(err) =>
-                        Ok((addr, Err(err))),
-                    Ok(()) => {
-                        let conn = match self.clients.get(&addr) {
-                            None => ServerConn{
-                                info: ConnInfo{
-                                    local_seq: Seq(0),
-                                    remote_seq: packet.header.info.local_seq,
-                                },
-                                last_remote_seq: packet.header.info.remote_seq,
+        let mut buf = [0, ..MAX_PACKET_SIZE];
+        let (addr, packet): (SocketAddr, IoResult<Packet<T>>) = try!(recv_and_decode(&mut self.socket, &mut buf));
+        Ok((addr, packet.and_then(move |packet| {
+            check_proto_id(&packet.header, "Server.recv: wrong proto id").and_then(move |_| {
+                let mut clients = self.clients.lock().unwrap();
+                let conn = match clients.get(&addr) {
+                    None => ServerConn{
+                        info: ConnInfo{
+                            local_seq: Seq(0),
+                            remote_seq: packet.header.info.local_seq,
+                        },
+                        last_remote_seq: packet.header.info.remote_seq,
+                    },
+                    Some(conn) =>
+                        ServerConn{
+                            info: ConnInfo{
+                                remote_seq: Seq::more_recent(packet.header.info.local_seq, conn.info.remote_seq),
+                                local_seq: conn.info.local_seq,
                             },
-                            Some(conn) =>
-                                ServerConn{
-                                    info: ConnInfo{
-                                        remote_seq: Seq::more_recent(packet.header.info.local_seq, conn.info.remote_seq),
-                                        local_seq: conn.info.local_seq,
-                                    },
-                                    last_remote_seq: Seq::more_recent(packet.header.info.remote_seq, conn.last_remote_seq),
-                                }
-                        };
-                        let _ = self.clients.insert(addr, conn);
-                        Ok((addr, Ok(packet.body)))
-                    }
-                }
-            }
+                            last_remote_seq: Seq::more_recent(packet.header.info.remote_seq, conn.last_remote_seq),
+                        }
+                };
+                let _ = clients.insert(addr, conn);
+                Ok(packet.body)
+            })})))
+
+    }
+
+    fn get_conn(&self, addr: &SocketAddr) -> Option<ServerConn> {
+        let clients = self.clients.lock().unwrap();
+        match clients.get(addr) {
+            None       => None,
+            Some(conn) => Some(*conn),
         }
     }
 }
@@ -270,7 +269,7 @@ fn test() {
     assert!(recv_body.ok().unwrap() == body);
     assert!(recv_addr == client_addr);
     {
-        let server_client_conn = server.clients.get(&client_addr).unwrap();
+        let server_client_conn = server.get_conn(&client_addr).unwrap();
         assert!(server_client_conn.info.remote_seq == Seq(1));
         assert!(server_client_conn.info.local_seq == Seq(0));
         assert!(server_client_conn.last_remote_seq == Seq(0));
@@ -279,7 +278,7 @@ fn test() {
     let body: int = 4321;
     server.send(client_addr, &body);
     {
-        let server_client_conn = server.clients.get(&client_addr).unwrap();
+        let server_client_conn = server.get_conn(&client_addr).unwrap();
         assert!(server_client_conn.info.remote_seq == Seq(1));
         assert!(server_client_conn.info.local_seq == Seq(1));
         assert!(server_client_conn.last_remote_seq == Seq(0));

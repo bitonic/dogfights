@@ -21,7 +21,7 @@ pub trait Acceleration {
 }
 
 #[inline]
-fn evaluate<T: Acceleration>(x: &T, state: &State, dt: f64, d: Derivative) -> Derivative {
+fn evaluate<T: Acceleration>(x: &T, state: &State, dt: f32, d: Derivative) -> Derivative {
     let state = State{
         pos: state.pos + d.dpos*dt,
         v: state.v + d.dv*dt,
@@ -30,7 +30,7 @@ fn evaluate<T: Acceleration>(x: &T, state: &State, dt: f64, d: Derivative) -> De
 }
 
 #[inline]
-pub fn integrate<T: Acceleration>(x: &T, state: &State, dt: f64) -> State {
+pub fn integrate<T: Acceleration>(x: &T, state: &State, dt: f32) -> State {
     let a = evaluate(x, state, 0., Derivative{dpos: Vec2::zero(), dv: Vec2::zero()});
     let b = evaluate(x, state, dt*0.5, a);
     let c = evaluate(x, state, dt*0.5, b);

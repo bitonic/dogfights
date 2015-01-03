@@ -3,18 +3,18 @@ extern crate "rustc-serialize" as rustc_serialize;
 
 use std::num::FloatMath;
 use std::num::Float;
-use std::f64::consts::PI;
+use std::f32::consts::PI;
 
 // ---------------------------------------------------------------------
 // Angles
 
 #[inline(always)]
-pub fn to_radians(x: f64) -> f64 {
+pub fn to_radians(x: f32) -> f32 {
     x * PI/180.
 }
 
 #[inline(always)]
-pub fn from_radians(x: f64) -> f64 {
+pub fn from_radians(x: f32) -> f32 {
     x * 180./PI
 }
 
@@ -24,7 +24,7 @@ pub fn from_radians(x: f64) -> f64 {
 #[deriving(PartialEq, Clone, Copy, Show, RustcEncodable, RustcDecodable)]
 pub struct Transform {
     pub pos: Vec2,
-    pub rotation: f64,
+    pub rotation: f32,
 }
 
 impl Add<Vec2, Transform> for Transform {
@@ -67,8 +67,8 @@ impl Transform {
 
 #[deriving(PartialEq, Clone, Show, Copy, RustcEncodable, RustcDecodable)]
 pub struct Vec2 {
-    pub x: f64,
-    pub y: f64,
+    pub x: f32,
+    pub y: f32,
 }
 
 impl Add<Vec2, Vec2> for Vec2 {
@@ -83,14 +83,14 @@ impl Sub<Vec2, Vec2> for Vec2 {
     }
 }
 
-impl Mul<f64, Vec2> for Vec2 {
-    fn mul(self: Vec2, other: f64) -> Vec2 {
+impl Mul<f32, Vec2> for Vec2 {
+    fn mul(self: Vec2, other: f32) -> Vec2 {
         Vec2 {x: self.x * other, y: self.y * other}
     }
 }
 
-impl Div<f64, Vec2> for Vec2 {
-    fn div(self: Vec2, other: f64) -> Vec2 {
+impl Div<f32, Vec2> for Vec2 {
+    fn div(self: Vec2, other: f32) -> Vec2 {
         Vec2 {x: self.x / other, y: self.y / other}
     }
 }
@@ -100,7 +100,7 @@ impl Vec2 {
         sdl2::rect::Point{x: self.x as i32, y: self.y as i32}
     }
 
-    // pub fn rotate_centered(&self, center: &Vec2, rotation: f64) -> Vec2 {
+    // pub fn rotate_centered(&self, center: &Vec2, rotation: f32) -> Vec2 {
     //     let x_diff = self.x - center.x;
     //     let y_diff = self.y - center.y;
     //     Vec2 {
@@ -111,7 +111,7 @@ impl Vec2 {
 
     // We rotate clockwise because SDL does so too -- the y axes starts
     // from 0 at the top and decreases going down.
-    pub fn rotate(&self, rotation: f64) -> Vec2 {
+    pub fn rotate(&self, rotation: f32) -> Vec2 {
         Vec2 {
             x: self.x * rotation.cos() + self.y * rotation.sin(),
             y: self.y * rotation.cos() - self.x * rotation.sin(),
@@ -122,7 +122,7 @@ impl Vec2 {
         self.rotate(trans.rotation) + trans.pos
     }
 
-    pub fn mag(&self) -> f64 {
+    pub fn mag(&self) -> f32 {
         (self.x*self.x + self.y*self.y).sqrt()
     }
 
@@ -138,17 +138,17 @@ impl Vec2 {
 pub struct Rect {
     // The top-left corner of the rectangle.
     pub pos: Vec2,
-    pub w: f64,
-    pub h: f64,
+    pub w: f32,
+    pub h: f32,
 }
 
 #[inline(always)]
-fn min(x: f64, y: f64) -> f64 {
+fn min(x: f32, y: f32) -> f32 {
     if x < y { x } else { y }
 }
 
 #[inline(always)]
-fn max(x: f64, y: f64) -> f64 {
+fn max(x: f32, y: f32) -> f32 {
     if x >= y { x } else { y }
 }
  
@@ -172,7 +172,7 @@ impl Rect {
 
     pub fn overlapping(&this: &Rect, this_t: &Transform, other: &Rect, other_t: &Transform) -> bool {
         #[inline(always)]
-        fn project_rect(axis: Vec2, tl: Vec2, tr: Vec2, bl: Vec2, br: Vec2) -> (f64, f64) {
+        fn project_rect(axis: Vec2, tl: Vec2, tr: Vec2, bl: Vec2, br: Vec2) -> (f32, f32) {
             let (min_1, max_1) = project_edge(axis, tl, tr);
             let (min_2, max_2) = project_edge(axis, tl, bl);
             let (min_3, max_3) = project_edge(axis, bl, br);
@@ -181,14 +181,14 @@ impl Rect {
         }
 
         #[inline(always)]
-        fn project_edge(axis: Vec2, l: Vec2, r: Vec2) -> (f64, f64) {
+        fn project_edge(axis: Vec2, l: Vec2, r: Vec2) -> (f32, f32) {
             let p1 = project_vec(axis, l);
             let p2 = project_vec(axis, r);
             if p1 < p2 { (p1, p2) } else { (p2, p1) }
         }
 
         #[inline(always)]
-        fn project_vec(u: Vec2, v: Vec2) -> f64 {
+        fn project_vec(u: Vec2, v: Vec2) -> f32 {
             let v_mag = v.mag();
             let cos = (u.x.abs()*v.x + u.y.abs()*v.y) / (u.mag() * v_mag);
             cos*v_mag

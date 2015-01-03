@@ -16,6 +16,10 @@ path = "src/dogfights.rs"
 name = "dogfights-server"
 path = "src/dogfights-server.rs"
 
+[[bin]]
+name = "dogfights-remote"
+path = "src/dogfights-remote.rs"
+
 [dependencies.sdl2]
 # git = "https://github.com/AngryLawyer/rust-sdl2"
 path = "/home/bitonic/src/rust-sdl2"
@@ -25,7 +29,8 @@ path = "/home/bitonic/src/rust-sdl2"
 path = "/home/bitonic/src/rust-sdl2_image"
 
 [dependencies]
-rustc-serialize = "0.1.5"
+rustc-serialize = "0.2.1"
 
 [dependencies.bincode]
-git = "https://github.com/TyOverby/bincode"
+# git = "https://github.com/TyOverby/bincode"
+path = "/home/bitonic/src/bincode"

@@ -10,12 +10,11 @@ use std::collections::hash_map::Entry;
 use std::io::{IoResult};
 use std::io::net::ip::{SocketAddr, ToSocketAddr};
 use std::comm::{Sender, Receiver};
-use std::sync::{Arc, Mutex};
 use std::thread::{Thread, JoinGuard};
 use sdl2::SdlResult;
 use sdl2::pixels::Color;
 use sdl2::render::{Renderer, Texture};
-use rustc_serialize::{Encodable, Encoder};
+use rustc_serialize::{Encodable, Encoder, Decodable, Decoder};
 
 use geometry::{to_radians, from_radians, Vec2, Rect, Transform};
 
@@ -26,12 +25,12 @@ pub mod network;
 // ---------------------------------------------------------------------
 // Constants
 
-static SCREEN_WIDTH: f64 = 800.;
-static SCREEN_HEIGHT: f64 = 600.;
+static SCREEN_WIDTH: f32 = 800.;
+static SCREEN_HEIGHT: f32 = 600.;
 
 // 50 ms timesteps
-const TIME_STEP: f64 = 0.01;
-const MAX_FRAME_TIME: f64 = 0.250;
+const TIME_STEP: f32 = 0.01;
+const MAX_FRAME_TIME: f32 = 0.250;
 
 // ---------------------------------------------------------------------
 // Bounding boxes
@@ -76,7 +75,7 @@ struct Sprite<'a> {
     rect: Rect,
     center: Vec2,
     // If the sprite is already rotated by some angle
-    angle: f64,
+    angle: f32,
 }
 
 impl<'a> Sprite<'a> {
@@ -88,7 +87,7 @@ impl<'a> Sprite<'a> {
         };
         let angle = from_radians(trans.rotation);
         renderer.copy_ex(
-            self.texture, Some(self.rect.sdl_rect()), Some(dst.sdl_rect()), self.angle - angle,
+            self.texture, Some(self.rect.sdl_rect()), Some(dst.sdl_rect()), ((self.angle - angle) as f64),
             Some(self.center.point()), sdl2::render::RendererFlip::None)
     }
 }
@@ -98,8 +97,8 @@ impl<'a> Sprite<'a> {
 
 #[deriving(PartialEq, Clone, Copy)]
 struct Map<'a> {
-    w: f64,
-    h: f64,
+    w: f32,
+    h: f32,
     background_color: Color, 
     background_texture: &'a Texture,
 }
@@ -107,7 +106,7 @@ struct Map<'a> {
 impl<'a> Map<'a> {
     fn bound(&self, p: Vec2) -> Vec2 {
         // TODO handle points that are badly negative
-        fn f(n: f64, m: f64) -> f64 {
+        fn f(n: f32, m: f32) -> f32 {
             if n < 0. {
                 0.
             } else if n > m {
@@ -119,8 +118,8 @@ impl<'a> Map<'a> {
         Vec2{x: f(p.x, self.w), y: f(p.y, self.h)}
     }
 
-    fn bound_rect(&self, p: Vec2, w: f64, h: f64) -> Vec2 {
-        fn f(n: f64, edge: f64, m: f64) -> f64 {
+    fn bound_rect(&self, p: Vec2, w: f32, h: f32) -> Vec2 {
+        fn f(n: f32, edge: f32, m: f32) -> f32 {
             if n < 0. {
                 0.
             } else if n + edge > m {
@@ -157,8 +156,8 @@ impl<'a> Map<'a> {
         // └──────────────────────────────────────────┘
 
         let bgr = try!(self.background_texture.query());
-        let bgr_w = bgr.width as f64;
-        let bgr_h = bgr.height as f64;
+        let bgr_w = bgr.width as f32;
+        let bgr_h = bgr.height as f32;
         let t = Vec2 {
             x: bgr_w - (pos.x % bgr_w),
             y: bgr_h - (pos.y % bgr_h),
@@ -199,8 +198,9 @@ impl<'a> Map<'a> {
 // ---------------------------------------------------------------------
 // Actors
 
-type ActorId = uint;
+type ActorId = u32;
 
+// FIXME: efficient serialization using u8
 #[deriving(PartialEq, Clone, Copy, Show, RustcEncodable, RustcDecodable)]
 enum Actor {
     Ship(Ship),
@@ -210,7 +210,7 @@ enum Actor {
 
 impl Actor {
     // Returns whether the actor is still alive
-    fn advance<'a>(&self, sspec: &GameSpec<'a>, actors: &mut Actors, input: Option<Input>, dt: f64) -> Option<Actor> {
+    fn advance(&self, sspec: &GameSpec, actors: &mut Actors, input: Option<Input>, dt: f32) -> Option<Actor> {
         match *self {
             Actor::Ship(ref ship) =>
                 ship.advance(sspec, actors, input, dt).map(|x| Actor::Ship(x)),
@@ -225,11 +225,11 @@ impl Actor {
         }
     }
 
-    fn interact<'a>(&self, _: &GameSpec<'a>, _: &Actors) -> Option<Actor> {
+    fn interact(&self, _: &GameSpec, _: &Actors) -> Option<Actor> {
         Some(*self)
     }
 
-    fn render<'a>(&self, sspec: &GameSpec<'a>, renderer: &Renderer, trans: &Transform) -> SdlResult<()> {
+    fn render(&self, sspec: &GameSpec, renderer: &Renderer, trans: &Transform) -> SdlResult<()> {
         match *self {
             Actor::Ship(ref ship) => ship.render(sspec, renderer, trans),
             Actor::Shooter(ref shooter) => shooter.render(sspec, renderer, trans),
@@ -245,7 +245,7 @@ impl Actor {
     }
 }
 
-type SpecId = uint;
+type SpecId = u32;
 
 #[deriving(PartialEq, Clone, Copy)]
 enum Spec<'a> {
@@ -255,21 +255,21 @@ enum Spec<'a> {
 }
 
 impl<'a> Spec<'a> {
-    fn is_ship(&self) -> &ShipSpec<'a> {
+    fn is_ship(&self) -> &ShipSpec {
         match *self {
             Spec::ShipSpec(ref spec) => spec,
             _                        => unreachable!(),
         }
     }
 
-    fn is_shooter(&self) -> &ShooterSpec<'a> {
+    fn is_shooter(&self) -> &ShooterSpec {
         match *self {
             Spec::ShooterSpec(ref spec) => spec,
             _                           => unreachable!(),
         }
     }
 
-    fn is_bullet(&self) -> &BulletSpec<'a> {
+    fn is_bullet(&self) -> &BulletSpec {
         match *self {
             Spec::BulletSpec(ref spec) => spec,
             _                          => unreachable!(),
@@ -283,8 +283,8 @@ impl<'a> Spec<'a> {
 #[deriving(PartialEq, Clone, Copy)]
 struct BulletSpec<'a> {
     sprite: &'a Sprite<'a>,
-    velocity: f64,
-    lifetime: f64,
+    velocity: f32,
+    lifetime: f32,
     bbox: &'a BBox<'a>,
 }
 
@@ -292,12 +292,12 @@ struct BulletSpec<'a> {
 struct Bullet {
     spec: SpecId,
     trans: Transform,
-    age: f64,
+    age: f32,
 }
 
 impl Bullet {
-    fn advance<'a>(&self, sspec: &GameSpec<'a>, _: &mut Actors, dt: f64) -> Option<Bullet> {
-        let spec = sspec.specs[self.spec].is_bullet();
+    fn advance(&self, sspec: &GameSpec, _: &mut Actors, dt: f32) -> Option<Bullet> {
+        let spec = sspec.get_spec(self.spec).is_bullet();
         let pos = Vec2 {
             x: self.trans.pos.x + (spec.velocity * self.trans.rotation.cos() * dt),
             y: self.trans.pos.y + (-1. * spec.velocity * self.trans.rotation.sin() * dt),
@@ -314,8 +314,8 @@ impl Bullet {
         if alive { Some(bullet) } else { None }
     }
 
-    fn render<'a>(&self, sspec: &GameSpec<'a>, renderer: &Renderer, trans: &Transform) -> SdlResult<()> {
-        let spec = sspec.specs[self.spec].is_bullet();
+    fn render(&self, sspec: &GameSpec, renderer: &Renderer, trans: &Transform) -> SdlResult<()> {
+        let spec = sspec.get_spec(self.spec).is_bullet();
         let trans = trans.adjust(&self.trans);
         try!(spec.sprite.render(renderer, &trans));
         // Debugging -- render bbox
@@ -328,26 +328,26 @@ impl Bullet {
 
 #[deriving(PartialEq, Clone, Copy)]
 struct ShipSpec<'a> {
-    rotation_velocity: f64,
-    rotation_velocity_accelerating: f64,
-    acceleration: f64,
-    friction: f64,
-    gravity: f64,
+    rotation_velocity: f32,
+    rotation_velocity_accelerating: f32,
+    acceleration: f32,
+    friction: f32,
+    gravity: f32,
     sprite: &'a Sprite<'a>,
     sprite_accelerating: &'a Sprite<'a>,
     bullet_spec: SpecId,
-    firing_interval: f64,
+    firing_interval: f32,
     shoot_from: Vec2,
     bbox: &'a BBox<'a>,
 }
 
 #[deriving(PartialEq, Clone, Show, Copy)]
 struct CameraSpec {
-    acceleration: f64,
+    acceleration: f32,
     // The minimum distance from the top/bottom edges to the ship
-    v_padding: f64,
+    v_padding: f32,
     // The minimum distance from the left/right edges to the ship
-    h_padding: f64,
+    h_padding: f32,
 }
 
 #[deriving(PartialEq, Clone, Show, Copy, RustcEncodable, RustcDecodable)]
@@ -361,7 +361,7 @@ struct Ship {
     spec: SpecId,
     trans: Transform,
     velocity: Vec2,
-    not_firing_for: f64,
+    not_firing_for: f32,
     accelerating: bool,
     rotating: Rotating,
     camera: Camera,
@@ -370,7 +370,7 @@ struct Ship {
 struct ShipState<'a> {
     spec: &'a ShipSpec<'a>,
     accelerating: bool,
-    rotation: f64,
+    rotation: f32,
 }
 
 impl<'a> physics::Acceleration for ShipState<'a> {
@@ -403,16 +403,16 @@ impl Camera {
     }
 
     #[inline(always)]
-    fn left(&self) -> f64 { self.pos.x }
+    fn left(&self) -> f32 { self.pos.x }
     #[inline(always)]
-    fn right(&self) -> f64 { self.pos.x + SCREEN_WIDTH }
+    fn right(&self) -> f32 { self.pos.x + SCREEN_WIDTH }
     #[inline(always)]
-    fn top(&self) -> f64 { self.pos.y }
+    fn top(&self) -> f32 { self.pos.y }
     #[inline(always)]
-    fn bottom(&self) -> f64 { self.pos.y + SCREEN_HEIGHT }
+    fn bottom(&self) -> f32 { self.pos.y + SCREEN_HEIGHT }
 
     #[inline]
-    fn advance<'a>(&self, sspec: &GameSpec<'a>, ship_velocity: Vec2, ship_trans: Transform, dt: f64) -> Camera {
+    fn advance(&self, sspec: &GameSpec, ship_velocity: Vec2, ship_trans: Transform, dt: f32) -> Camera {
         let &mut cam = self;
         let spec = sspec.camera_spec;
         let map = sspec.map;
@@ -459,8 +459,8 @@ impl Ship {
         }
     }
 
-    fn advance<'a>(&self, sspec: &GameSpec<'a>, actors: &mut Actors, input: Option<Input>, dt: f64) -> Option<Ship> {
-        let spec = sspec.specs[self.spec].is_ship();
+    fn advance(&self, sspec: &GameSpec, actors: &mut Actors, input: Option<Input>, dt: f32) -> Option<Ship> {
+        let spec = sspec.get_spec(self.spec).is_ship();
         let mut not_firing_for = self.not_firing_for + dt;
         let (accelerating, rotating, firing) =
             match input {
@@ -528,9 +528,9 @@ impl Ship {
         Some(new)
     }
 
-    fn render<'a>(&self, sspec: &GameSpec<'a>, renderer: &Renderer, trans: &Transform) -> SdlResult<()> {
+    fn render(&self, sspec: &GameSpec, renderer: &Renderer, trans: &Transform) -> SdlResult<()> {
         let trans = trans.adjust(&self.trans);
-        let spec = sspec.specs[self.spec].is_ship();
+        let spec = sspec.get_spec(self.spec).is_ship();
 
         // =============================================================
         // Render ship
@@ -554,18 +554,18 @@ struct ShooterSpec<'a> {
     sprite: &'a Sprite<'a>,
     trans: Transform,
     bullet_spec: SpecId,
-    firing_rate: f64,
+    firing_rate: f32,
 }
 
 #[deriving(PartialEq, Clone, Copy, Show, RustcEncodable, RustcDecodable)]
 struct Shooter {
     spec: SpecId,
-    time_since_fire: f64,
+    time_since_fire: f32,
 }
 
 impl Shooter {
-    fn advance<'a>(&self, sspec: &GameSpec<'a>, actors: &mut Actors, dt: f64) -> Option<Shooter> {
-        let spec = sspec.specs[self.spec].is_shooter();
+    fn advance(&self, sspec: &GameSpec, actors: &mut Actors, dt: f32) -> Option<Shooter> {
+        let spec = sspec.get_spec(self.spec).is_shooter();
         let mut time_since_fire = self.time_since_fire + dt;
         if time_since_fire > spec.firing_rate {
             time_since_fire = 0.;
@@ -579,8 +579,8 @@ impl Shooter {
         Some(Shooter{spec: self.spec, time_since_fire: time_since_fire})
     }
 
-    fn render<'a>(&self, sspec: &GameSpec<'a>, renderer: &Renderer, trans: &Transform) -> SdlResult<()> {
-        let spec = sspec.specs[self.spec].is_shooter();
+    fn render(&self, sspec: &GameSpec, renderer: &Renderer, trans: &Transform) -> SdlResult<()> {
+        let spec = sspec.get_spec(self.spec).is_shooter();
         spec.sprite.render(renderer, &trans.adjust(&spec.trans))
     }
 }
@@ -597,6 +597,12 @@ struct GameSpec<'a> {
     specs: &'a [Spec<'a>],
 }
 
+impl<'a> GameSpec<'a> {
+    fn get_spec(&self, spec_id: SpecId) -> &'a Spec<'a> {
+        &self.specs[spec_id as uint]
+    }
+}
+
 #[deriving(PartialEq, Clone, Show)]
 struct Actors {
     actors: HashMap<ActorId, Actor>,
@@ -605,10 +611,26 @@ struct Actors {
 
 impl<E, S: Encoder<E>> Encodable<S, E> for Actors {
     fn encode(&self, s: &mut S) -> Result<(), E> {
+        let len: u32 = self.actors.len() as u32;
+        try!(len.encode(s));
         for pair in self.actors.iter() {
             try!(pair.encode(s));
         }
         self.count.encode(s)
+    }
+}
+
+impl<E, D: Decoder<E>> Decodable<D, E> for Actors {
+    fn decode(d: &mut D) -> Result<Actors, E> {
+        let len: u32 = try!(Decodable::decode(d));
+        let len: uint = len as uint;
+        let mut actors = HashMap::new();
+        for _ in range(0, len) {
+            let (actor_id, actor) = try!(Decodable::decode(d));
+            let _ = actors.insert(actor_id, actor);
+        }
+        let count = try!(Decodable::decode(d));
+        Ok(Actors{actors: actors, count: count})
     }
 }
 
@@ -643,7 +665,7 @@ impl Actors {
     }
 }
 
-#[deriving(PartialEq, Clone, Show, RustcEncodable)]
+#[deriving(PartialEq, Clone, Show, RustcEncodable, RustcDecodable)]
 struct Game {
     actors: Actors,
 }
@@ -651,6 +673,7 @@ struct Game {
 // ---------------------------------------------------------------------
 // Input
 
+// FIXME: efficient serialization using u8
 #[deriving(PartialEq, Clone, Copy, Show, RustcDecodable, RustcEncodable)]
 enum Rotating {
     Still,
@@ -704,7 +727,7 @@ impl Input {
     }
 }
 
-#[deriving(PartialEq, Clone, Copy)]
+#[deriving(PartialEq, Clone, Copy, Show)]
 struct ShipInput {
     ship: ActorId,
     input: Input,
@@ -720,7 +743,7 @@ impl ShipInput {
 }
 
 impl Game {
-    fn advance<'a>(&self, spec: &GameSpec<'a>, inputs: &Vec<ShipInput>, dt: f64) -> Game {
+    fn advance(&self, spec: &GameSpec, inputs: &Vec<ShipInput>, dt: f32) -> Game {
         // First move everything, spawn new stuff
         let mut advanced_actors = Actors::prepare_new(&self.actors);
         for (actor_id, actor) in self.actors.actors.iter() {
@@ -746,7 +769,7 @@ impl Game {
         }
     }
 
-    fn render<'a>(&self, spec: &GameSpec<'a>, renderer: &Renderer, trans: &Transform) -> SdlResult<()> {
+    fn render(&self, spec: &GameSpec, renderer: &Renderer, trans: &Transform) -> SdlResult<()> {
         // Paint the background for the whole thing
         try!(renderer.set_draw_color(Color::RGB(0x00, 0x00, 0x00)));
         try!(spec.map.render(renderer, &trans.pos));
@@ -756,28 +779,16 @@ impl Game {
         Ok(())
     }
 
-    fn add_ship<'a>(&mut self, spec: &GameSpec<'a>) -> ActorId {
+    fn add_ship(&mut self, spec: &GameSpec) -> ActorId {
         let ship_pos = Vec2 {x: SCREEN_WIDTH/2., y: SCREEN_HEIGHT/2.};
         self.actors.add(Actor::Ship(Ship::new(spec.ship_spec, ship_pos)))
     }
 }
 
 // ---------------------------------------------------------------------
-// Remote client
-
-// #[deriving(PartialEq, Clone)]
-// struct RemoteClient<'a> {
-//     game_spec: &'a GameSpec<'a>
-// }
-
-// impl<'a> RemoteClient<'a> {
-//     fn run<A: ToSocketAddr>(
-// }
-
-// ---------------------------------------------------------------------
 // Server
 
-type SnapshotId = uint;
+type SnapshotId = u32;
 
 #[deriving(PartialEq, Clone)]
 struct Server<'a> {
@@ -811,13 +822,10 @@ impl<'a> Server<'a> {
         }
     }
 
-    fn worker(queue: Sender<Message>, server_mutex: Arc<Mutex<network::Server>>) -> ! {
+    fn worker(queue: Sender<Message>, server: &mut network::Server) -> ! {
         loop {
-            println!("Worker looping");
-            let (addr, input): (SocketAddr, IoResult<Input>) = {
-                let mut server = server_mutex.lock().unwrap();
-                server.recv().ok().expect("Server.worker: Could not receive")
-            };
+            let (addr, input): (SocketAddr, IoResult<Input>) =
+                server.recv().ok().expect("Server.worker: Could not receive");
             match input {
                 Err(err) =>
                     println!("Server.worker: couldn't decode message: {}", err),
@@ -859,23 +867,26 @@ impl<'a> Server<'a> {
         inputs
     }
 
-    fn broadcast_game(&self, server_mutex: Arc<Mutex<network::Server>>) -> IoResult<()> {
+    fn broadcast_game(&self, server: &mut network::Server) -> IoResult<()> {
         // FIXME: encode once
-        let mut server = server_mutex.lock().unwrap();
-        for addr in self.clients.keys() {
-            try!(server.send(*addr, &self.game));
+        for (addr, player_id) in self.clients.iter() {
+            // FIXME: encode more efficiently...
+            let remote_game = PlayerGame{
+                game: self.game.clone(),
+                player_id: *player_id,
+            };
+            try!(server.send(*addr, &remote_game));
         };
         Ok(())
     }
 
     fn run<A: ToSocketAddr>(self, addr: &A) {
         let addr = addr.to_socket_addr().ok().expect("Server.run: could not get SocketAddr");
-        let server = network::Server::new(addr).ok().expect("Server.worker: Could not create network server");
-        let server_local_mutex = Arc::new(Mutex::new(server));
-        let server_remote_mutex = server_local_mutex.clone();
+        let mut server = network::Server::new(addr).ok().expect("Server.worker: Could not create network server");
+        let mut worker_server = server.clone();
         let (tx, rx) = channel();
         let guard: JoinGuard<()> = Thread::spawn(move || {
-            Server::worker(tx, server_remote_mutex)
+            Server::worker(tx, &mut worker_server)
         });
         guard.detach();
 
@@ -883,12 +894,11 @@ impl<'a> Server<'a> {
         let mut state = self;
         loop {
             let quit = Server::should_quit();
-            if quit { println!("Server quitting!"); break };
 
             let inputs = Server::drain(&rx);
             let inputs = state.prepare_inputs(&inputs);
             state.game = state.game.advance(state.game_spec, &inputs, TIME_STEP);
-            state.broadcast_game(server_local_mutex.clone()).ok().expect("Couldn't broadcast messages");
+            state.broadcast_game(&mut server.clone()).ok().expect("Couldn't broadcast messages");
 
             // FIXME: maybe time more precisely -- e.g. take into
             // account the time it took to generate the state
@@ -908,27 +918,30 @@ pub fn server<A: ToSocketAddr>(addr: &A) {
 }
 
 // ---------------------------------------------------------------------
-// Client
+// PlayerGame
 
-#[deriving(PartialEq, Clone)]
-struct Client<'a> {
-    game_spec: &'a GameSpec<'a>,
+#[deriving(PartialEq, Clone, Show, RustcEncodable, RustcDecodable)]
+struct PlayerGame {
     game: Game,
     player_id: ActorId,
 }
 
-impl<'a> Client<'a> {
-    fn advance(&self, input: &Input, dt: f64) -> Client<'a> {
+impl PlayerGame {
+    fn advance(&self, spec: &GameSpec, input: &Input, dt: f32) -> PlayerGame {
         let inputs = vec![ShipInput{ship: self.player_id, input: *input}];
-        let game = self.game.advance(self.game_spec, &inputs, dt);
-        Client{
-            game_spec: self.game_spec,
+        let game = self.game.advance(spec, &inputs, dt);
+        PlayerGame{
             game: game,
             player_id: self.player_id
         }
     }
 
-    fn run(self, renderer: &Renderer) {
+    fn render(&self, spec: &GameSpec, renderer: &Renderer) -> SdlResult<()> {
+        let camera = self.game.actors.get(self.player_id).is_ship().camera;
+        self.game.render(spec, renderer, &camera.transform())
+    }
+
+    fn run(self, spec: &GameSpec, renderer: &Renderer) {
         let mut prev_time = sdl2::get_ticks();
         let mut accumulator = 0.;
         let mut state = self;
@@ -944,7 +957,7 @@ impl<'a> Client<'a> {
             if input.quit { break };
 
             let time_now = sdl2::get_ticks();
-            let frame_time = ((time_now - prev_time) as f64) / 1000.; // Seconds to millis
+            let frame_time = ((time_now - prev_time) as f32) / 1000.; // Seconds to millis
             let frame_time = if frame_time > MAX_FRAME_TIME { MAX_FRAME_TIME } else { frame_time };
             prev_time = time_now;
             accumulator += frame_time;
@@ -952,10 +965,10 @@ impl<'a> Client<'a> {
             let mut previous = state.clone();
             if accumulator >= TIME_STEP {
                 accumulator -= TIME_STEP;
-                let mut current = previous.advance(&input, TIME_STEP);
+                let mut current = previous.advance(spec, &input, TIME_STEP);
                 while accumulator >= TIME_STEP {
                     accumulator -= TIME_STEP;
-                    let new = current.advance(&input, TIME_STEP);
+                    let new = current.advance(spec, &input, TIME_STEP);
                     previous = current;
                     current = new;
                 }
@@ -963,8 +976,7 @@ impl<'a> Client<'a> {
                 state = current;
             }
 
-            let camera = state.game.actors.get(state.player_id).is_ship().camera;
-            state.game.render(state.game_spec, renderer, &camera.transform()).ok().expect("Failed to render the state");
+            state.render(spec, renderer).ok().expect("Failed to render the state");
             renderer.present();
         }
     }
@@ -984,13 +996,46 @@ pub fn client() {
             }));
         let game = Game{actors: actors};
 
-        let client = Client{
-            game_spec: spec,
+        let client = PlayerGame{
             game: game,
             player_id: player_id,
         };
-        client.run(&renderer);
+        client.run(spec, &renderer);
     })
+}
+
+pub fn remote_client<A: ToSocketAddr, B: ToSocketAddr>(server_addr: A, bind_addr: B) {
+    let renderer = init_sdl();
+    let mut client =
+        network::Client::new(server_addr, bind_addr).ok().expect("remote_client: could not create network client");
+    game_spec(&renderer, |spec| {
+        let mut input = Input{
+            quit: false,
+            accelerating: false,
+            firing: false,
+            rotating: Rotating::Still,
+            paused: false,
+        };
+        loop {
+            input.process_events();
+            if input.quit { break }
+
+            client.send(&input).ok().expect("remote_client: couldn't send to server");
+            loop {
+                let game: IoResult<PlayerGame> =
+                    client.recv().ok().expect("remote_client: couldn't receive from server");
+                match game {
+                    Ok(game) => {
+                        game.render(spec, &renderer).ok().expect("remote_client: couldn't render");
+                        renderer.present();
+                        break
+                    },
+                    Err(err) => {
+                        println!("Error while receiving state from server: {}", err)
+                    },
+                }
+            };
+        }});
 }
 
 // ---------------------------------------------------------------------
@@ -1112,4 +1157,27 @@ fn game_spec<T, F: FnOnce(&GameSpec) -> T>(renderer: &Renderer, cont: F) -> T {
         shooter_spec: shooter_spec_id,
         specs: specs.as_slice(),
     })
+}
+
+// ---------------------------------------------------------------------
+// tests
+
+#[test]
+fn test_encoding() {
+    let ship = Ship{
+        spec: 1,
+        trans: Transform::pos(Vec2 { x: 400., y: 300.005 }),
+        velocity: Vec2 { x: 0., y: 0.9999 },
+        not_firing_for: 100000.01,
+        accelerating: false,
+        rotating: Rotating::Still,
+        camera: Camera { pos: Vec2 { x: 0., y: 0.011999 }, velocity: Vec2 { x: 0., y: 1.19988 } }
+    };
+    let mut actors = Actors::new();
+    actors.insert(0, Actor::Ship(ship));
+    let game = PlayerGame{
+        game: Game { actors: actors },
+        player_id: 0
+    };
+    assert!(game == bincode::decode(bincode::encode(&game).ok().unwrap()).ok().unwrap());
 }
