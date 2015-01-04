@@ -28,8 +28,9 @@ path = "/home/bitonic/src/rust-sdl2"
 # git = "https://github.com/bitonic/rust-sdl2_image"
 path = "/home/bitonic/src/rust-sdl2_image"
 
-[dependencies]
-rustc-serialize = "0.2.1"
+[dependencies.rustc-serialize]
+# rustc-serialize = "0.2.2"
+path = "/home/bitonic/src/rustc-serialize"
 
 [dependencies.bincode]
 # git = "https://github.com/TyOverby/bincode"

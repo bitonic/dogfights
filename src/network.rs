@@ -14,13 +14,13 @@ const MAX_PACKET_SIZE: uint = 1400;
 
 // ---------------------------------------------------------------------
 
-#[deriving(PartialEq, Clone, Copy, Show, RustcDecodable, RustcEncodable)]
+#[derive(PartialEq, Clone, Copy, Show, RustcDecodable, RustcEncodable)]
 struct Packet<A> {
     header: Header,
     body: A,
 }
 
-#[deriving(PartialEq, Clone, Copy, Show, RustcDecodable, RustcEncodable)]
+#[derive(PartialEq, Clone, Copy, Show, RustcDecodable, RustcEncodable)]
 pub struct Seq(u32);
 
 impl Seq {
@@ -39,13 +39,13 @@ impl Seq {
     }
 }
 
-#[deriving(PartialEq, Clone, Copy, Show, RustcDecodable, RustcEncodable)]
+#[derive(PartialEq, Clone, Copy, Show, RustcDecodable, RustcEncodable)]
 struct ConnInfo {
     local_seq: Seq,
     remote_seq: Seq,
 }
 
-#[deriving(PartialEq, Clone, Copy, Show, RustcDecodable, RustcEncodable)]
+#[derive(PartialEq, Clone, Copy, Show, RustcDecodable, RustcEncodable)]
 struct Header {
     proto_id: u32,
     info: ConnInfo,
@@ -64,7 +64,7 @@ pub struct Client {
     connected_to: SocketAddr,
     socket: UdpSocket,
     info: ConnInfo,
-    buf: [u8, ..MAX_PACKET_SIZE],
+    buf: [u8; MAX_PACKET_SIZE],
 }
 
 // FIXME: we shouldn't allocate the buffers on the heap, but it's a mess
@@ -80,7 +80,7 @@ impl Client {
             },
             socket: sock,
             connected_to: connected_to,
-            buf: [0, ..MAX_PACKET_SIZE],
+            buf: [0; MAX_PACKET_SIZE],
         })
     }
 
@@ -108,14 +108,14 @@ impl Client {
     }
 }
 
-#[deriving(Clone)]
+#[derive(Clone)]
 pub struct Server {
     socket: UdpSocket,
     clients: Arc<Mutex<HashMap<SocketAddr, ServerConn>>>,
 }
 
 // FIXME: clean up inactive connections
-#[deriving(Copy, Clone)]
+#[derive(Copy, Clone)]
 struct ServerConn {
     // The last remote_seq received from the client.  This tells us
     // what's the last message we know the client received.
@@ -147,12 +147,12 @@ impl Server {
             header: Header::new(conn_info),
             body: body
         };
-        let mut buf = [0, ..MAX_PACKET_SIZE];
+        let mut buf = [0; MAX_PACKET_SIZE];
         encode_and_send(&mut self.socket, &mut buf, addr, &packet)
     }
 
     pub fn recv<T: for<'a, 'b> Decodable<DecoderReader<'a, BufReader<'b>>, IoError>>(&mut self) -> IoResult<(SocketAddr, IoResult<T>)> {
-        let mut buf = [0, ..MAX_PACKET_SIZE];
+        let mut buf = [0; MAX_PACKET_SIZE];
         let (addr, packet): (SocketAddr, IoResult<Packet<T>>) = try!(recv_and_decode(&mut self.socket, &mut buf));
         Ok((addr, packet.and_then(move |packet| {
             check_proto_id(&packet.header, "Server.recv: wrong proto id").and_then(move |_| {
@@ -180,6 +180,7 @@ impl Server {
 
     }
 
+    #[cfg(test)]
     fn get_conn(&self, addr: &SocketAddr) -> Option<ServerConn> {
         let clients = self.clients.lock().unwrap();
         match clients.get(addr) {
@@ -228,7 +229,7 @@ fn check_proto_id(header: &Header, msg: &'static str) -> IoResult<()> {
 // ---------------------------------------------------------------------
 // Multiple seqs
 
-// #[deriving(PartialEq, Clone, Copy, Show, RustcDecodable, RustcEncodable)]
+// #[derive(PartialEq, Clone, Copy, Show, RustcDecodable, RustcEncodable)]
 // struct RemoteSeqs {
 //     last: Seq,
 //     // A bitfield that records whether the previous 32 messages were

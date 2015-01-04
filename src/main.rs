@@ -1,733 +1,48 @@
+#![feature(associated_types)]
+#![feature(default_type_params)]
+#![feature(globs)]
+#![feature(old_orphan_check)]
 #![feature(slicing_syntax)]
+extern crate bincode;
 extern crate sdl2;
 extern crate sdl2_image;
 extern crate "rustc-serialize" as rustc_serialize;
-extern crate bincode;
 
-use std::num::FloatMath;
-use std::collections::HashMap;
-use std::collections::hash_map::Entry;
-use std::io::{IoResult};
-use std::io::net::ip::{SocketAddr, ToSocketAddr};
-use std::comm::{Sender, Receiver};
-use std::thread::{Thread, JoinGuard};
+use rustc_serialize::{Encodable, Encoder, Decoder};
 use sdl2::SdlResult;
 use sdl2::pixels::Color;
-use sdl2::render::{Renderer, Texture};
-use rustc_serialize::{Encodable, Encoder, Decodable, Decoder};
+use sdl2::render::Renderer;
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::io::net::ip::{SocketAddr, ToSocketAddr};
+use std::io::{IoResult};
+use std::slice::SliceExt;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread::{Thread, JoinGuard};
+use std::ops::Deref;
 
-use geometry::{to_radians, from_radians, Vec2, Rect, Transform};
+use actors::*;
+use constants::*;
+use geometry::*;
+use input::*;
+use render::*;
+use specs::*;
 
+pub mod actors;
+pub mod constants;
 pub mod geometry;
-pub mod physics;
+pub mod input;
 pub mod network;
-
-// ---------------------------------------------------------------------
-// Constants
-
-static SCREEN_WIDTH: f32 = 800.;
-static SCREEN_HEIGHT: f32 = 600.;
-
-// 50 ms timesteps
-const TIME_STEP: f32 = 0.01;
-const MAX_FRAME_TIME: f32 = 0.250;
-
-// ---------------------------------------------------------------------
-// Bounding boxes
-
-#[deriving(PartialEq, Clone)]
-struct BBox<'a> {
-    rects: &'a [Rect],
-}
-
-impl<'a> BBox<'a> {
-    fn overlapping(this: BBox, this_t: &Transform, other: BBox, other_t: &Transform) -> bool {
-        let mut overlap = false;
-        for this in this.rects.iter() {
-            if overlap { break };
-            for other in other.rects.iter() {
-                if overlap { break };
-                overlap = Rect::overlapping(this, this_t, other, other_t);
-            }
-        }
-        overlap
-    }
-
-    fn render(&self, renderer: &Renderer, trans: &Transform) -> SdlResult<()> {
-        try!(renderer.set_draw_color(Color::RGB(0xFF, 0x00, 0x00)));
-        for rect in self.rects.iter() {
-            let (tl, tr, bl, br) = rect.transform(trans);
-            try!(renderer.draw_line(tl.point(), tr.point()));
-            try!(renderer.draw_line(tr.point(), br.point()));
-            try!(renderer.draw_line(br.point(), bl.point()));
-            try!(renderer.draw_line(bl.point(), tl.point()));
-        };
-        Ok(())
-    }
-}
-
-// ---------------------------------------------------------------------
-// Sprites
-
-#[deriving(PartialEq, Clone, Copy)]
-struct Sprite<'a> {
-    texture: &'a Texture,
-    rect: Rect,
-    center: Vec2,
-    // If the sprite is already rotated by some angle
-    angle: f32,
-}
-
-impl<'a> Sprite<'a> {
-    fn render(&self, renderer: &Renderer, trans: &Transform) -> SdlResult<()> {
-        let dst = Rect{
-            pos: trans.pos - self.center,
-            w: self.rect.w,
-            h: self.rect.h
-        };
-        let angle = from_radians(trans.rotation);
-        renderer.copy_ex(
-            self.texture, Some(self.rect.sdl_rect()), Some(dst.sdl_rect()), ((self.angle - angle) as f64),
-            Some(self.center.point()), sdl2::render::RendererFlip::None)
-    }
-}
-
-// ---------------------------------------------------------------------
-// Maps
-
-#[deriving(PartialEq, Clone, Copy)]
-struct Map<'a> {
-    w: f32,
-    h: f32,
-    background_color: Color, 
-    background_texture: &'a Texture,
-}
-
-impl<'a> Map<'a> {
-    fn bound(&self, p: Vec2) -> Vec2 {
-        // TODO handle points that are badly negative
-        fn f(n: f32, m: f32) -> f32 {
-            if n < 0. {
-                0.
-            } else if n > m {
-                m
-            } else {
-                n
-            }
-        };
-        Vec2{x: f(p.x, self.w), y: f(p.y, self.h)}
-    }
-
-    fn bound_rect(&self, p: Vec2, w: f32, h: f32) -> Vec2 {
-        fn f(n: f32, edge: f32, m: f32) -> f32 {
-            if n < 0. {
-                0.
-            } else if n + edge > m {
-                m - edge
-            } else {
-                n
-            }
-        };
-        Vec2{x: f(p.x, w, self.w), y: f(p.y, h, self.h)}
-    }
-
-    fn render(&self, renderer: &Renderer, pos: &Vec2) -> SdlResult<()> {
-        // Fill the whole screen with the background color
-        try!(renderer.set_draw_color(self.background_color));
-        let rect = sdl2::rect::Rect {
-            x: 0, y: 0, w: SCREEN_WIDTH as i32, h: SCREEN_HEIGHT as i32
-        };
-        try!(renderer.fill_rect(&rect));
-
-        // Fill with the background texture.  The assumption is that 4
-        // background images are needed to cover the entire screen:
-        // 
-        // map
-        // ┌──────────────────────────────────────────┐
-        // │                  ┊                   ┊   │
-        // │  pos             ┊                   ┊   │
-        // │  ┌─────────────────────┐             ┊   │
-        // │  │               ┊     │             ┊   │
-        // │  │             t ┊     │             ┊   │
-        // │┄┄│┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄│┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄│
-        // │  │               ┊     │             ┊   │
-        // │  └─────────────────────┘             ┊   │
-        // │                  ┊                   ┊   │
-        // └──────────────────────────────────────────┘
-
-        let bgr = try!(self.background_texture.query());
-        let bgr_w = bgr.width as f32;
-        let bgr_h = bgr.height as f32;
-        let t = Vec2 {
-            x: bgr_w - (pos.x % bgr_w),
-            y: bgr_h - (pos.y % bgr_h),
-        };
-        let top_left = Vec2 {
-            x: t.x - bgr_w,
-            y: t.y - bgr_h,
-        };
-        let top_right = Vec2 {
-            x: t.x,
-            y: t.y - bgr_h,
-        };
-        let bottom_left = Vec2 {
-            x: t.x - bgr_w,
-            y: t.y,
-        };
-        let bottom_right = Vec2 {
-            x: t.x,
-            y: t.y,
-        };
-        let to_rect = |p: Vec2| -> Option<sdl2::rect::Rect> {
-            Some(sdl2::rect::Rect {
-                x: p.x as i32,
-                y: p.y as i32,
-                w: bgr.width as i32,
-                h: bgr.height as i32,
-            })
-        };
-        
-        try!(renderer.copy(self.background_texture, None, to_rect(top_left)));
-        try!(renderer.copy(self.background_texture, None, to_rect(top_right)));
-        try!(renderer.copy(self.background_texture, None, to_rect(bottom_left)));
-        renderer.copy(self.background_texture, None, to_rect(bottom_right))
-    }
-}
-
-
-// ---------------------------------------------------------------------
-// Actors
-
-type ActorId = u32;
-
-// FIXME: efficient serialization using u8
-#[deriving(PartialEq, Clone, Copy, Show, RustcEncodable, RustcDecodable)]
-enum Actor {
-    Ship(Ship),
-    Shooter(Shooter),
-    Bullet(Bullet),
-}
-
-impl Actor {
-    // Returns whether the actor is still alive
-    fn advance(&self, sspec: &GameSpec, actors: &mut Actors, input: Option<Input>, dt: f32) -> Option<Actor> {
-        match *self {
-            Actor::Ship(ref ship) =>
-                ship.advance(sspec, actors, input, dt).map(|x| Actor::Ship(x)),
-            Actor::Shooter(ref shooter) => {
-                assert!(input.is_none());
-                shooter.advance(sspec, actors, dt).map(|x| Actor::Shooter(x))
-            },
-            Actor::Bullet(ref bullet) => {
-                assert!(input.is_none());
-                bullet.advance(sspec, actors, dt).map(|x| Actor::Bullet(x))
-            },
-        }
-    }
-
-    fn interact(&self, _: &GameSpec, _: &Actors) -> Option<Actor> {
-        Some(*self)
-    }
-
-    fn render(&self, sspec: &GameSpec, renderer: &Renderer, trans: &Transform) -> SdlResult<()> {
-        match *self {
-            Actor::Ship(ref ship) => ship.render(sspec, renderer, trans),
-            Actor::Shooter(ref shooter) => shooter.render(sspec, renderer, trans),
-            Actor::Bullet(ref bullet) => bullet.render(sspec, renderer, trans),
-        }
-    }
-
-    fn is_ship(&self) -> &Ship {
-        match *self {
-            Actor::Ship(ref ship) => ship,
-            _                     => unreachable!(),
-        }
-    }
-}
-
-type SpecId = u32;
-
-#[deriving(PartialEq, Clone, Copy)]
-enum Spec<'a> {
-    ShipSpec(ShipSpec<'a>),
-    ShooterSpec(ShooterSpec<'a>),
-    BulletSpec(BulletSpec<'a>),
-}
-
-impl<'a> Spec<'a> {
-    fn is_ship(&self) -> &ShipSpec {
-        match *self {
-            Spec::ShipSpec(ref spec) => spec,
-            _                        => unreachable!(),
-        }
-    }
-
-    fn is_shooter(&self) -> &ShooterSpec {
-        match *self {
-            Spec::ShooterSpec(ref spec) => spec,
-            _                           => unreachable!(),
-        }
-    }
-
-    fn is_bullet(&self) -> &BulletSpec {
-        match *self {
-            Spec::BulletSpec(ref spec) => spec,
-            _                          => unreachable!(),
-        }
-    }
-}
-
-// ---------------------------------------------------------------------
-// Bullets
-
-#[deriving(PartialEq, Clone, Copy)]
-struct BulletSpec<'a> {
-    sprite: &'a Sprite<'a>,
-    velocity: f32,
-    lifetime: f32,
-    bbox: &'a BBox<'a>,
-}
-
-#[deriving(PartialEq, Clone, Copy, Show, RustcDecodable, RustcEncodable)]
-struct Bullet {
-    spec: SpecId,
-    trans: Transform,
-    age: f32,
-}
-
-impl Bullet {
-    fn advance(&self, sspec: &GameSpec, _: &mut Actors, dt: f32) -> Option<Bullet> {
-        let spec = sspec.get_spec(self.spec).is_bullet();
-        let pos = Vec2 {
-            x: self.trans.pos.x + (spec.velocity * self.trans.rotation.cos() * dt),
-            y: self.trans.pos.y + (-1. * spec.velocity * self.trans.rotation.sin() * dt),
-        };
-        let bullet = Bullet {
-            spec: self.spec,
-            trans: Transform{pos: pos, rotation: self.trans.rotation},
-            age: self.age + dt,
-        };
-        let alive =
-            bullet.trans.pos.x >= 0. && bullet.trans.pos.x <= sspec.map.w &&
-            bullet.trans.pos.y >= 0. && bullet.trans.pos.y <= sspec.map.h &&
-            bullet.age < spec.lifetime;
-        if alive { Some(bullet) } else { None }
-    }
-
-    fn render(&self, sspec: &GameSpec, renderer: &Renderer, trans: &Transform) -> SdlResult<()> {
-        let spec = sspec.get_spec(self.spec).is_bullet();
-        let trans = trans.adjust(&self.trans);
-        try!(spec.sprite.render(renderer, &trans));
-        // Debugging -- render bbox
-        spec.bbox.render(renderer, &trans)
-    }
-}
-
-// ---------------------------------------------------------------------
-// Ship
-
-#[deriving(PartialEq, Clone, Copy)]
-struct ShipSpec<'a> {
-    rotation_velocity: f32,
-    rotation_velocity_accelerating: f32,
-    acceleration: f32,
-    friction: f32,
-    gravity: f32,
-    sprite: &'a Sprite<'a>,
-    sprite_accelerating: &'a Sprite<'a>,
-    bullet_spec: SpecId,
-    firing_interval: f32,
-    shoot_from: Vec2,
-    bbox: &'a BBox<'a>,
-}
-
-#[deriving(PartialEq, Clone, Show, Copy)]
-struct CameraSpec {
-    acceleration: f32,
-    // The minimum distance from the top/bottom edges to the ship
-    v_padding: f32,
-    // The minimum distance from the left/right edges to the ship
-    h_padding: f32,
-}
-
-#[deriving(PartialEq, Clone, Show, Copy, RustcEncodable, RustcDecodable)]
-struct Camera {
-    pos: Vec2,
-    velocity: Vec2,
-}
-
-#[deriving(PartialEq, Clone, Copy, Show, RustcEncodable, RustcDecodable)]
-struct Ship {
-    spec: SpecId,
-    trans: Transform,
-    velocity: Vec2,
-    not_firing_for: f32,
-    accelerating: bool,
-    rotating: Rotating,
-    camera: Camera,
-}
-
-struct ShipState<'a> {
-    spec: &'a ShipSpec<'a>,
-    accelerating: bool,
-    rotation: f32,
-}
-
-impl<'a> physics::Acceleration for ShipState<'a> {
-    fn acceleration(&self, state: &physics::State) -> Vec2 {
-        let mut f = Vec2::zero();
-        // Acceleration
-        if self.accelerating {
-            f.x += self.rotation.cos() * self.spec.acceleration;
-            // The sin is inverted because we push the opposite
-            // direction we're looking at.
-            f.y += -1. * self.rotation.sin() * self.spec.acceleration;
-        }
-
-        // Gravity
-        f.y += self.spec.gravity;
-
-        // Friction
-        let friction = state.v * self.spec.friction;
-        f = f - friction;
-
-        // Done
-        f
-    }
-}
-
-impl Camera {
-    #[inline]
-    fn transform(&self) -> Transform {
-        Transform{pos: self.pos, rotation: 0.}
-    }
-
-    #[inline(always)]
-    fn left(&self) -> f32 { self.pos.x }
-    #[inline(always)]
-    fn right(&self) -> f32 { self.pos.x + SCREEN_WIDTH }
-    #[inline(always)]
-    fn top(&self) -> f32 { self.pos.y }
-    #[inline(always)]
-    fn bottom(&self) -> f32 { self.pos.y + SCREEN_HEIGHT }
-
-    #[inline]
-    fn advance(&self, sspec: &GameSpec, ship_velocity: Vec2, ship_trans: Transform, dt: f32) -> Camera {
-        let &mut cam = self;
-        let spec = sspec.camera_spec;
-        let map = sspec.map;
-
-        // Push the camera based on the ship velocity
-        cam.velocity = ship_velocity * spec.acceleration;
-        cam.pos = cam.pos + cam.velocity * dt;
-
-        // Make sure the ship is not too much to the edge
-        if cam.left() + spec.h_padding > ship_trans.pos.x {
-            cam.pos.x = ship_trans.pos.x - spec.h_padding
-        } else if cam.right() - spec.h_padding < ship_trans.pos.x {
-            cam.pos.x = (ship_trans.pos.x + spec.h_padding) - SCREEN_WIDTH
-        }
-        if cam.top() + spec.v_padding > ship_trans.pos.y {
-            cam.pos.y = ship_trans.pos.y - spec.v_padding
-        } else if cam.bottom() - spec.v_padding < ship_trans.pos.y {
-            cam.pos.y = (ship_trans.pos.y + spec.v_padding) - SCREEN_HEIGHT
-        }
-
-        // Make sure it stays in the map
-        cam.pos = map.bound_rect(cam.pos, SCREEN_WIDTH, SCREEN_HEIGHT);
-
-        cam
-    }
-}
-
-impl Ship {
-    fn new(spec_id: SpecId, pos: Vec2) -> Ship {
-        Ship{
-            spec: spec_id,
-            trans: Transform::pos(pos),
-            velocity: Vec2::zero(),
-            not_firing_for: 100000.,
-            accelerating: false,
-            rotating: Rotating::Still,
-            camera: Camera{
-                pos: Vec2{
-                    x: pos.x - SCREEN_WIDTH/2.,
-                    y: pos.y - SCREEN_HEIGHT/2.,
-                },
-                velocity: Vec2::zero(),
-            }
-        }
-    }
-
-    fn advance(&self, sspec: &GameSpec, actors: &mut Actors, input: Option<Input>, dt: f32) -> Option<Ship> {
-        let spec = sspec.get_spec(self.spec).is_ship();
-        let mut not_firing_for = self.not_firing_for + dt;
-        let (accelerating, rotating, firing) =
-            match input {
-                None => (self.accelerating, self.rotating, false),
-                Some(input) => {
-                    let firing = if input.firing && self.not_firing_for >= spec.firing_interval {
-                        not_firing_for = 0.;
-                        true
-                    } else {
-                        false
-                    };
-                    (input.accelerating, input.rotating, firing)
-                },
-            };
-        let mut trans = self.trans;
-        let mut velocity = self.velocity;
-
-        // =============================================================
-        // Apply the rotation
-        let rotation_velocity = if accelerating {
-            spec.rotation_velocity_accelerating
-        } else {
-            spec.rotation_velocity
-        };
-        let rotation_delta = dt * rotation_velocity;
-        match rotating {
-            Rotating::Still => {},
-            Rotating::Left  => trans.rotation += rotation_delta,
-            Rotating::Right => trans.rotation -= rotation_delta,
-        }
-
-        // =============================================================
-        // Apply the force
-        let st = physics::State {pos: trans.pos, v: velocity};
-        let st = physics::integrate(&ShipState{spec: spec, accelerating: accelerating, rotation: trans.rotation}, &st, dt);
-        velocity = st.v;
-        trans.pos = st.pos;
-        trans.pos = sspec.map.bound(trans.pos);
-
-        // =============================================================
-        // Move the camera
-        let camera = self.camera.advance(sspec, velocity, trans, dt);
-
-        // =============================================================
-        // Add new bullet
-        if firing {
-            let shoot_from = spec.shoot_from.rotate(trans.rotation);
-            let bullet = Bullet {
-                spec: spec.bullet_spec,
-                trans: trans + shoot_from,
-                age: 0.,
-            };
-            actors.add(Actor::Bullet(bullet));
-        }
-        
-        let new = Ship {
-            spec: self.spec,
-            trans: trans,
-            velocity: velocity,
-            not_firing_for: not_firing_for,
-            accelerating: accelerating,
-            rotating: rotating,
-            camera: camera,
-        };
-        Some(new)
-    }
-
-    fn render(&self, sspec: &GameSpec, renderer: &Renderer, trans: &Transform) -> SdlResult<()> {
-        let trans = trans.adjust(&self.trans);
-        let spec = sspec.get_spec(self.spec).is_ship();
-
-        // =============================================================
-        // Render ship
-        if self.accelerating {
-            try!(spec.sprite_accelerating.render(renderer, &trans));
-        } else {
-            try!(spec.sprite.render(renderer, &trans));
-        }
-
-        // =============================================================
-        // Debugging -- render bbox
-        spec.bbox.render(renderer, &trans)
-    }
-}
-
-// ---------------------------------------------------------------------
-// Shooter
-
-#[deriving(PartialEq, Clone, Copy)]
-struct ShooterSpec<'a> {
-    sprite: &'a Sprite<'a>,
-    trans: Transform,
-    bullet_spec: SpecId,
-    firing_rate: f32,
-}
-
-#[deriving(PartialEq, Clone, Copy, Show, RustcEncodable, RustcDecodable)]
-struct Shooter {
-    spec: SpecId,
-    time_since_fire: f32,
-}
-
-impl Shooter {
-    fn advance(&self, sspec: &GameSpec, actors: &mut Actors, dt: f32) -> Option<Shooter> {
-        let spec = sspec.get_spec(self.spec).is_shooter();
-        let mut time_since_fire = self.time_since_fire + dt;
-        if time_since_fire > spec.firing_rate {
-            time_since_fire = 0.;
-            let bullet = Bullet {
-                spec: spec.bullet_spec,
-                trans: spec.trans,
-                age: 0.,
-            };
-            actors.add(Actor::Bullet(bullet));
-        }
-        Some(Shooter{spec: self.spec, time_since_fire: time_since_fire})
-    }
-
-    fn render(&self, sspec: &GameSpec, renderer: &Renderer, trans: &Transform) -> SdlResult<()> {
-        let spec = sspec.get_spec(self.spec).is_shooter();
-        spec.sprite.render(renderer, &trans.adjust(&spec.trans))
-    }
-}
-
-// ---------------------------------------------------------------------
-// Game
-
-#[deriving(PartialEq, Clone, Copy)]
-struct GameSpec<'a> {
-    map: &'a Map<'a>,
-    camera_spec: &'a CameraSpec,
-    ship_spec: SpecId,
-    shooter_spec: SpecId,
-    specs: &'a [Spec<'a>],
-}
-
-impl<'a> GameSpec<'a> {
-    fn get_spec(&self, spec_id: SpecId) -> &'a Spec<'a> {
-        &self.specs[spec_id as uint]
-    }
-}
-
-#[deriving(PartialEq, Clone, Show)]
-struct Actors {
-    actors: HashMap<ActorId, Actor>,
-    count: ActorId,
-}
-
-impl<E, S: Encoder<E>> Encodable<S, E> for Actors {
-    fn encode(&self, s: &mut S) -> Result<(), E> {
-        let len: u32 = self.actors.len() as u32;
-        try!(len.encode(s));
-        for pair in self.actors.iter() {
-            try!(pair.encode(s));
-        }
-        self.count.encode(s)
-    }
-}
-
-impl<E, D: Decoder<E>> Decodable<D, E> for Actors {
-    fn decode(d: &mut D) -> Result<Actors, E> {
-        let len: u32 = try!(Decodable::decode(d));
-        let len: uint = len as uint;
-        let mut actors = HashMap::new();
-        for _ in range(0, len) {
-            let (actor_id, actor) = try!(Decodable::decode(d));
-            let _ = actors.insert(actor_id, actor);
-        }
-        let count = try!(Decodable::decode(d));
-        Ok(Actors{actors: actors, count: count})
-    }
-}
-
-impl Actors {
-    fn new() -> Actors {
-        Actors{actors: HashMap::new(), count: 0}
-    }
-
-    fn prepare_new(old: &Actors) -> Actors {
-        Actors{
-            actors: HashMap::with_capacity(old.actors.len()),
-            count: old.count,
-        }
-    }
-
-    fn add(&mut self, actor: Actor) -> ActorId {
-        let actor_id = self.count;
-        self.count += 1;
-        self.actors.insert(actor_id, actor);
-        actor_id
-    }
-
-    fn insert(&mut self, actor_id: ActorId, actor: Actor) {
-        self.actors.insert(actor_id, actor);
-    }
-
-    fn get(&self, actor_id: ActorId) -> &Actor {
-        match self.actors.get(&actor_id) {
-            None => unreachable!(),
-            Some(actor) => actor,
-        }
-    }
-}
-
-#[deriving(PartialEq, Clone, Show, RustcEncodable, RustcDecodable)]
+pub mod physics;
+pub mod render;
+pub mod specs;
+
+#[derive(PartialEq, Clone, Show, RustcEncodable, RustcDecodable)]
 struct Game {
     actors: Actors,
 }
 
-// ---------------------------------------------------------------------
-// Input
-
-// FIXME: efficient serialization using u8
-#[deriving(PartialEq, Clone, Copy, Show, RustcDecodable, RustcEncodable)]
-enum Rotating {
-    Still,
-    Left,
-    Right,
-}
-
-#[deriving(PartialEq, Clone, Copy, Show, RustcEncodable, RustcDecodable)]
-struct Input {
-    quit: bool,
-    accelerating: bool,
-    firing: bool,
-    rotating: Rotating,
-    paused: bool,
-}
-
-impl Input {
-    fn process_events(&mut self) {
-        loop {
-            match sdl2::event::poll_event() {
-                sdl2::event::Event::None =>
-                    break,
-                sdl2::event::Event::Quit(_) =>
-                    self.quit = true,
-                sdl2::event::Event::KeyDown(_, _, key, _, _, _) =>
-                    match key {
-                        sdl2::keycode::KeyCode::Left  => self.rotating = Rotating::Left,
-                        sdl2::keycode::KeyCode::Right => self.rotating = Rotating::Right,
-                        sdl2::keycode::KeyCode::Up    => self.accelerating = true,
-                        sdl2::keycode::KeyCode::X     => self.firing = true,
-                        sdl2::keycode::KeyCode::P     => self.paused = !self.paused,
-                        _                             => {},
-                    },
-                sdl2::event::Event::KeyUp(_, _, key, _, _, _) => {
-                    if self.accelerating && key == sdl2::keycode::KeyCode::Up {
-                        self.accelerating = false
-                    };
-                    if self.firing && key == sdl2::keycode::KeyCode::X {
-                        self.firing = false;
-                    };
-                    if self.rotating == Rotating::Left && key == sdl2::keycode::KeyCode::Left {
-                        self.rotating = Rotating::Still;
-                    };
-                    if self.rotating == Rotating::Right && key == sdl2::keycode::KeyCode::Right {
-                        self.rotating = Rotating::Still;
-                    };
-                },
-                _ => {},
-            }
-        };
-    }
-}
-
-#[deriving(PartialEq, Clone, Copy, Show)]
+#[derive(PartialEq, Clone, Copy, Show)]
 struct ShipInput {
     ship: ActorId,
     input: Input,
@@ -769,20 +84,16 @@ impl Game {
         }
     }
 
-    fn render(&self, spec: &GameSpec, renderer: &Renderer, trans: &Transform) -> SdlResult<()> {
-        // Paint the background for the whole thing
-        try!(renderer.set_draw_color(Color::RGB(0x00, 0x00, 0x00)));
-        try!(spec.map.render(renderer, &trans.pos));
-        for actor in self.actors.actors.values() {
-            try!(actor.render(spec, renderer, trans));
-        };
-        Ok(())
-    }
-
     fn add_ship(&mut self, spec: &GameSpec) -> ActorId {
         let ship_pos = Vec2 {x: SCREEN_WIDTH/2., y: SCREEN_HEIGHT/2.};
         self.actors.add(Actor::Ship(Ship::new(spec.ship_spec, ship_pos)))
     }
+}
+
+fn render_game(game: &Game, spec: &GameSpec, renderer: &Renderer, trans: &Transform) -> SdlResult<()> {
+    try!(render_map(spec.map, renderer, &trans.pos));
+    try!(render_actors(&game.actors, spec, renderer, trans));
+    Ok(())
 }
 
 // ---------------------------------------------------------------------
@@ -790,13 +101,14 @@ impl Game {
 
 type SnapshotId = u32;
 
-#[deriving(PartialEq, Clone)]
+#[derive(PartialEq, Clone)]
 struct Server<'a> {
     game_spec: &'a GameSpec<'a>,
     game: Game,
     clients: HashMap<SocketAddr, ActorId>,
 }
 
+#[derive(PartialEq, Clone)]
 struct Message {
     from: SocketAddr,
     input: Input,
@@ -822,7 +134,7 @@ impl<'a> Server<'a> {
         }
     }
 
-    fn worker(queue: Sender<Message>, server: &mut network::Server) -> ! {
+    fn worker(queue: Arc<Mutex<Vec<Message>>>, server: &mut network::Server) -> ! {
         loop {
             let (addr, input): (SocketAddr, IoResult<Input>) =
                 server.recv().ok().expect("Server.worker: Could not receive");
@@ -831,25 +143,20 @@ impl<'a> Server<'a> {
                     println!("Server.worker: couldn't decode message: {}", err),
                 Ok(input) => {
                     let msg = Message{from: addr, input: input};
-                    queue.send(msg)
+                    {
+                        let mut msgs = queue.lock().unwrap();
+                        msgs.push(msg);
+                    }
                 }
             }
         }
     }
 
-    // FIXME: static bound on the messages we can get, to keep up with
-    // network
-    fn drain(queue: &Receiver<Message>) -> Vec<Message> {
-        let mut vec = Vec::new();
-        loop {
-            let msg = queue.try_recv();
-            match msg {
-                // FIXME: handle disconnections
-                Err(_)  => break,
-                Ok(msg) => vec.push(msg),
-            }
-        };
-        vec
+    fn drain(queue: Arc<Mutex<Vec<Message>>>) -> Vec<Message> {
+        let mut msgs: MutexGuard<Vec<Message>> = queue.lock().unwrap();
+        let old_msgs: Vec<Message> = msgs.deref().clone();
+        msgs.clear();
+        old_msgs
     }
 
     fn prepare_inputs(&mut self, msgs: &Vec<Message>) -> Vec<ShipInput> {
@@ -884,18 +191,19 @@ impl<'a> Server<'a> {
         let addr = addr.to_socket_addr().ok().expect("Server.run: could not get SocketAddr");
         let mut server = network::Server::new(addr).ok().expect("Server.worker: Could not create network server");
         let mut worker_server = server.clone();
-        let (tx, rx) = channel();
+        let queue_local = Arc::new(Mutex::new(Vec::new()));
+        let queue_worker = queue_local.clone();
         let guard: JoinGuard<()> = Thread::spawn(move || {
-            Server::worker(tx, &mut worker_server)
+            Server::worker(queue_worker, &mut worker_server)
         });
         guard.detach();
 
         let wait_ms = (TIME_STEP * 1000.) as uint;
         let mut state = self;
         loop {
-            let quit = Server::should_quit();
+            if Server::should_quit() { break }
 
-            let inputs = Server::drain(&rx);
+            let inputs = Server::drain(queue_local.clone());
             let inputs = state.prepare_inputs(&inputs);
             state.game = state.game.advance(state.game_spec, &inputs, TIME_STEP);
             state.broadcast_game(&mut server.clone()).ok().expect("Couldn't broadcast messages");
@@ -920,7 +228,7 @@ pub fn server<A: ToSocketAddr>(addr: &A) {
 // ---------------------------------------------------------------------
 // PlayerGame
 
-#[deriving(PartialEq, Clone, Show, RustcEncodable, RustcDecodable)]
+#[derive(PartialEq, Clone, Show, RustcEncodable, RustcDecodable)]
 struct PlayerGame {
     game: Game,
     player_id: ActorId,
@@ -938,7 +246,7 @@ impl PlayerGame {
 
     fn render(&self, spec: &GameSpec, renderer: &Renderer) -> SdlResult<()> {
         let camera = self.game.actors.get(self.player_id).is_ship().camera;
-        self.game.render(spec, renderer, &camera.transform())
+        render_game(&self.game, spec, renderer, &camera.transform())
     }
 
     fn run(self, spec: &GameSpec, renderer: &Renderer) {
@@ -947,7 +255,7 @@ impl PlayerGame {
         let mut state = self;
         let mut input = Input{
             quit: false,
-            accelerating: false,
+            accel: false,
             firing: false,
             rotating: Rotating::Still,
             paused: false,
@@ -1011,7 +319,7 @@ pub fn remote_client<A: ToSocketAddr, B: ToSocketAddr>(server_addr: A, bind_addr
     game_spec(&renderer, |spec| {
         let mut input = Input{
             quit: false,
-            accelerating: false,
+            accel: false,
             firing: false,
             rotating: Rotating::Still,
             paused: false,
@@ -1070,7 +378,7 @@ fn game_spec<T, F: FnOnce(&GameSpec) -> T>(renderer: &Renderer, cont: F) -> T {
             center: Vec2{x: 1., y: 6.},
             angle: 90.,
         },
-        velocity: 1000.,
+        vel: 1000.,
         lifetime: 5000.,
         bbox: &BBox {
             rects: &[
@@ -1084,9 +392,9 @@ fn game_spec<T, F: FnOnce(&GameSpec) -> T>(renderer: &Renderer, cont: F) -> T {
     let bullet_spec_id = 0;
     specs.push(Spec::BulletSpec(bullet_spec));
     let ship_spec = ShipSpec {
-        rotation_velocity: 10.,
-        rotation_velocity_accelerating: 1.,
-        acceleration: 800.,
+        rotation_vel: 10.,
+        rotation_vel_accel: 1.,
+        accel: 800.,
         friction: 0.02,
         gravity: 100.,
         sprite: &Sprite{
@@ -1095,7 +403,7 @@ fn game_spec<T, F: FnOnce(&GameSpec) -> T>(renderer: &Renderer, cont: F) -> T {
             center: Vec2{x: 15., y: 12.},
             angle: 90.,
         },
-        sprite_accelerating: &Sprite {
+        sprite_accel: &Sprite {
             texture: &planes_texture,
             rect: Rect{pos: Vec2{x: 88., y: 96.}, w: 30., h: 24.},
             center: Vec2{x: 15., y: 12.},
@@ -1146,9 +454,9 @@ fn game_spec<T, F: FnOnce(&GameSpec) -> T>(renderer: &Renderer, cont: F) -> T {
         background_texture: &map_texture,
     };
     let camera_spec = &CameraSpec {
-        acceleration: 1.2,
-        h_padding: 220.,
-        v_padding: 220. * SCREEN_HEIGHT / SCREEN_WIDTH,
+        accel: 1.2,
+        h_pad: 220.,
+        v_pad: 220. * SCREEN_HEIGHT / SCREEN_WIDTH,
     };
     cont(&GameSpec{
         map: map,
@@ -1157,27 +465,4 @@ fn game_spec<T, F: FnOnce(&GameSpec) -> T>(renderer: &Renderer, cont: F) -> T {
         shooter_spec: shooter_spec_id,
         specs: specs.as_slice(),
     })
-}
-
-// ---------------------------------------------------------------------
-// tests
-
-#[test]
-fn test_encoding() {
-    let ship = Ship{
-        spec: 1,
-        trans: Transform::pos(Vec2 { x: 400., y: 300.005 }),
-        velocity: Vec2 { x: 0., y: 0.9999 },
-        not_firing_for: 100000.01,
-        accelerating: false,
-        rotating: Rotating::Still,
-        camera: Camera { pos: Vec2 { x: 0., y: 0.011999 }, velocity: Vec2 { x: 0., y: 1.19988 } }
-    };
-    let mut actors = Actors::new();
-    actors.insert(0, Actor::Ship(ship));
-    let game = PlayerGame{
-        game: Game { actors: actors },
-        player_id: 0
-    };
-    assert!(game == bincode::decode(bincode::encode(&game).ok().unwrap()).ok().unwrap());
 }

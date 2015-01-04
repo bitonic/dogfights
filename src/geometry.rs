@@ -4,6 +4,7 @@ extern crate "rustc-serialize" as rustc_serialize;
 use std::num::FloatMath;
 use std::num::Float;
 use std::f32::consts::PI;
+use std::ops::{Add, Sub, Mul, Div};
 
 // ---------------------------------------------------------------------
 // Angles
@@ -21,13 +22,15 @@ pub fn from_radians(x: f32) -> f32 {
 // ---------------------------------------------------------------------
 // Transform
 
-#[deriving(PartialEq, Clone, Copy, Show, RustcEncodable, RustcDecodable)]
+#[derive(PartialEq, Clone, Copy, Show, RustcEncodable, RustcDecodable)]
 pub struct Transform {
     pub pos: Vec2,
     pub rotation: f32,
 }
 
-impl Add<Vec2, Transform> for Transform {
+impl Add<Vec2> for Transform {
+    type Output = Transform;
+
     fn add(self, other: Vec2) -> Transform {
         Transform {
             pos: self.pos + other,
@@ -36,7 +39,9 @@ impl Add<Vec2, Transform> for Transform {
     }
 }
 
-impl Sub<Vec2, Transform> for Transform {
+impl Sub<Vec2> for Transform {
+    type Output = Transform;
+
     fn sub(self, other: Vec2) -> Transform {
         Transform {
             pos: self.pos - other,
@@ -65,31 +70,39 @@ impl Transform {
 // ---------------------------------------------------------------------
 // Vec
 
-#[deriving(PartialEq, Clone, Show, Copy, RustcEncodable, RustcDecodable)]
+#[derive(PartialEq, Clone, Show, Copy, RustcEncodable, RustcDecodable)]
 pub struct Vec2 {
     pub x: f32,
     pub y: f32,
 }
 
-impl Add<Vec2, Vec2> for Vec2 {
+impl Add for Vec2 {
+    type Output = Vec2;
+
     fn add(self, other: Vec2) -> Vec2 {
         Vec2 {x : self.x + other.x, y: self.y + other.y}
     }
 }
 
-impl Sub<Vec2, Vec2> for Vec2 {
+impl Sub for Vec2 {
+    type Output = Vec2;
+
     fn sub(self, other: Vec2) -> Vec2 {
         Vec2 {x : self.x - other.x, y: self.y - other.y}
     }
 }
 
-impl Mul<f32, Vec2> for Vec2 {
+impl Mul<f32> for Vec2 {
+    type Output = Vec2;
+
     fn mul(self: Vec2, other: f32) -> Vec2 {
         Vec2 {x: self.x * other, y: self.y * other}
     }
 }
 
-impl Div<f32, Vec2> for Vec2 {
+impl Div<f32> for Vec2 {
+    type Output = Vec2;
+
     fn div(self: Vec2, other: f32) -> Vec2 {
         Vec2 {x: self.x / other, y: self.y / other}
     }
@@ -134,7 +147,7 @@ impl Vec2 {
 // ---------------------------------------------------------------------
 // Rect
 
-#[deriving(PartialEq, Clone, Show, Copy, RustcDecodable, RustcEncodable)]
+#[derive(PartialEq, Clone, Show, Copy, RustcDecodable, RustcEncodable)]
 pub struct Rect {
     // The top-left corner of the rectangle.
     pub pos: Vec2,
