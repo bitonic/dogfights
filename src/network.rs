@@ -1,5 +1,6 @@
 extern crate "rustc-serialize" as rustc_serialize;
 extern crate bincode;
+#[phase(plugin, link)] extern crate log;
 
 use std::io::net::udp::UdpSocket;
 use std::io::net::ip::{SocketAddr, ToSocketAddr};
@@ -90,12 +91,14 @@ impl Client {
             header: Header::new(self.info),
             body: body,
         };
+        debug!("network::Client: Sending packet to address {}", self.connected_to);
         encode_and_send(&mut self.socket, &mut self.buf, self.connected_to, &packet)
     }
 
     pub fn recv<T: for<'a, 'b>Decodable<DecoderReader<'a, BufReader<'b>>, IoError>>(&mut self) -> IoResult<IoResult<T>> {
         let (addr, packet): (SocketAddr, IoResult<Packet<T>>) = try!(recv_and_decode(&mut self.socket, &mut self.buf));
         Ok(packet.and_then(move |packet| {
+            debug!("network::Client: Received packet from address {}", addr);
             let header = packet.header;
             check_proto_id(&header, "Client.recv: wrong proto id").and_then(move |_| {
                 if addr != self.connected_to {
@@ -148,6 +151,7 @@ impl Server {
             body: body
         };
         let mut buf = [0; MAX_PACKET_SIZE];
+        debug!("network::Server: Sending packet to address {}", addr);
         encode_and_send(&mut self.socket, &mut buf, addr, &packet)
     }
 
@@ -156,6 +160,7 @@ impl Server {
         let (addr, packet): (SocketAddr, IoResult<Packet<T>>) = try!(recv_and_decode(&mut self.socket, &mut buf));
         Ok((addr, packet.and_then(move |packet| {
             check_proto_id(&packet.header, "Server.recv: wrong proto id").and_then(move |_| {
+                debug!("network::Server: Received packet from address {}", addr);
                 let mut clients = self.clients.lock().unwrap();
                 let conn = match clients.get(&addr) {
                     None => ServerConn{

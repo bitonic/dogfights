@@ -21,38 +21,45 @@ pub struct Input {
 }
 
 impl Input {
-    pub fn process_events(&mut self) {
+    pub fn process_events(self) -> Input {
+        let mut input = self;
         loop {
             match sdl2::event::poll_event() {
                 sdl2::event::Event::None =>
                     break,
                 sdl2::event::Event::Quit(_) =>
-                    self.quit = true,
+                    input.quit = true,
                 sdl2::event::Event::KeyDown(_, _, key, _, _, _) =>
                     match key {
-                        sdl2::keycode::KeyCode::Left  => self.rotating = Rotating::Left,
-                        sdl2::keycode::KeyCode::Right => self.rotating = Rotating::Right,
-                        sdl2::keycode::KeyCode::Up    => self.accel = true,
-                        sdl2::keycode::KeyCode::X     => self.firing = true,
-                        sdl2::keycode::KeyCode::P     => self.paused = !self.paused,
+                        sdl2::keycode::KeyCode::Left  => input.rotating = Rotating::Left,
+                        sdl2::keycode::KeyCode::Right => input.rotating = Rotating::Right,
+                        sdl2::keycode::KeyCode::Up    => input.accel = true,
+                        sdl2::keycode::KeyCode::X     => input.firing = true,
+                        sdl2::keycode::KeyCode::P     => input.paused = !input.paused,
                         _                             => {},
                     },
                 sdl2::event::Event::KeyUp(_, _, key, _, _, _) => {
-                    if self.accel && key == sdl2::keycode::KeyCode::Up {
-                        self.accel = false
+                    if input.accel && key == sdl2::keycode::KeyCode::Up {
+                        input.accel = false
                     };
-                    if self.firing && key == sdl2::keycode::KeyCode::X {
-                        self.firing = false;
+                    if input.firing && key == sdl2::keycode::KeyCode::X {
+                        input.firing = false;
                     };
-                    if self.rotating == Rotating::Left && key == sdl2::keycode::KeyCode::Left {
-                        self.rotating = Rotating::Still;
+                    if input.rotating == Rotating::Left && key == sdl2::keycode::KeyCode::Left {
+                        input.rotating = Rotating::Still;
                     };
-                    if self.rotating == Rotating::Right && key == sdl2::keycode::KeyCode::Right {
-                        self.rotating = Rotating::Still;
+                    if input.rotating == Rotating::Right && key == sdl2::keycode::KeyCode::Right {
+                        input.rotating = Rotating::Still;
                     };
                 },
                 _ => {},
             }
         };
+        input
     }
+}
+
+#[test]
+fn test() {
+    assert!(Rotating::Still != Rotating::Right);
 }

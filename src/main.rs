@@ -2,11 +2,13 @@
 #![feature(default_type_params)]
 #![feature(globs)]
 #![feature(old_orphan_check)]
+#![feature(phase)]
 #![feature(slicing_syntax)]
 extern crate bincode;
 extern crate sdl2;
 extern crate sdl2_image;
 extern crate "rustc-serialize" as rustc_serialize;
+#[phase(plugin, link)] extern crate log;
 
 use rustc_serialize::{Encodable, Encoder, Decoder};
 use sdl2::SdlResult;
@@ -187,9 +189,9 @@ impl<'a> Server<'a> {
         Ok(())
     }
 
-    fn run<A: ToSocketAddr>(self, addr: &A) {
+    fn run<A: ToSocketAddr>(self, addr: &A, renderer: &Renderer, spec: &GameSpec) {
         let addr = addr.to_socket_addr().ok().expect("Server.run: could not get SocketAddr");
-        let mut server = network::Server::new(addr).ok().expect("Server.worker: Could not create network server");
+        let server = network::Server::new(addr).ok().expect("Server.worker: Could not create network server");
         let mut worker_server = server.clone();
         let queue_local = Arc::new(Mutex::new(Vec::new()));
         let queue_worker = queue_local.clone();
@@ -200,7 +202,13 @@ impl<'a> Server<'a> {
 
         let wait_ms = (TIME_STEP * 1000.) as uint;
         let mut state = self;
+        let mut player_id: Option<ActorId> = None;
+        let mut prev_time = sdl2::get_ticks();
         loop {
+            let time = sdl2::get_ticks();
+            debug!("Server main loop.  Time interval: {}", time - prev_time);
+            prev_time = time;
+
             if Server::should_quit() { break }
 
             let inputs = Server::drain(queue_local.clone());
@@ -211,17 +219,31 @@ impl<'a> Server<'a> {
             // FIXME: maybe time more precisely -- e.g. take into
             // account the time it took to generate the state
             sdl2::timer::delay(wait_ms);
+
+            // Render if we have at least one player id to follow
+            for first_player_id in state.game.actors.actors.keys() {
+                player_id = Some(*first_player_id);
+                break
+            };
+            match player_id {
+                Some(player_id) => {
+                    let camera = state.game.actors.get(player_id).is_ship().camera;
+                    render_game(&state.game, spec, renderer, &camera.transform()).ok().expect("Couldn't render game");
+                    renderer.present();
+                },
+                None => {}
+            }
         }
     }
 }
 
 pub fn server<A: ToSocketAddr>(addr: &A) {
-    let renderer = init_sdl();
+    let renderer = init_sdl(false);
     game_spec(&renderer, |spec| {
         // Actors
         let game = Game{actors: Actors::new()};
         let server = Server::new(spec, game);
-        server.run(addr);
+        server.run(addr, &renderer, spec);
     })
 }
 
@@ -261,7 +283,7 @@ impl PlayerGame {
             paused: false,
         };
         loop {
-            input.process_events();
+            input = input.process_events();
             if input.quit { break };
 
             let time_now = sdl2::get_ticks();
@@ -291,7 +313,7 @@ impl PlayerGame {
 }
 
 pub fn client() {
-    let renderer = init_sdl();
+    let renderer = init_sdl(true);
     game_spec(&renderer, |spec| {
         // Actors
         let mut actors = Actors::new();
@@ -313,7 +335,7 @@ pub fn client() {
 }
 
 pub fn remote_client<A: ToSocketAddr, B: ToSocketAddr>(server_addr: A, bind_addr: B) {
-    let renderer = init_sdl();
+    let renderer = init_sdl(false);
     let mut client =
         network::Client::new(server_addr, bind_addr).ok().expect("remote_client: could not create network client");
     game_spec(&renderer, |spec| {
@@ -324,11 +346,21 @@ pub fn remote_client<A: ToSocketAddr, B: ToSocketAddr>(server_addr: A, bind_addr
             rotating: Rotating::Still,
             paused: false,
         };
+        let mut prev_input;
+        // Send the first to make sure the server knows we're there.
+        client.send(&input).ok().expect("remote_client: couldn't send to server");
         loop {
-            input.process_events();
-            if input.quit { break }
-
-            client.send(&input).ok().expect("remote_client: couldn't send to server");
+            prev_input = input;
+            input = input.process_events();
+            debug!("Input: {}", input);
+            if input.quit {
+                debug!("Quitting");
+                break
+            }
+            if input != prev_input {
+                debug!("Input changed, sending it");
+                client.send(&input).ok().expect("remote_client: couldn't send to server");
+            }
             loop {
                 let game: IoResult<PlayerGame> =
                     client.recv().ok().expect("remote_client: couldn't receive from server");
@@ -349,17 +381,16 @@ pub fn remote_client<A: ToSocketAddr, B: ToSocketAddr>(server_addr: A, bind_addr
 // ---------------------------------------------------------------------
 // Init
 
-fn init_sdl() -> Renderer {
+fn init_sdl(vsync: bool) -> Renderer {
     sdl2::init(sdl2::INIT_VIDEO);
     let window = sdl2::video::Window::new(
         "Dogfights",
         sdl2::video::WindowPos::PosUndefined, sdl2::video::WindowPos::PosUndefined,
         (SCREEN_WIDTH as int), (SCREEN_HEIGHT as int),
         sdl2::video::SHOWN).ok().unwrap();
-    let renderer = Renderer::from_window(
-        window,
-        sdl2::render::RenderDriverIndex::Auto,
-        sdl2::render::ACCELERATED | sdl2::render::PRESENTVSYNC).ok().unwrap();
+    let vsync_flag = if vsync { sdl2::render::PRESENTVSYNC } else { sdl2::render::RendererFlags::empty() };
+    let flags = sdl2::render::ACCELERATED | vsync_flag;
+    let renderer = Renderer::from_window(window, sdl2::render::RenderDriverIndex::Auto, flags).ok().unwrap();
     renderer.set_logical_size((SCREEN_WIDTH as int), (SCREEN_HEIGHT as int)).ok().unwrap();
     renderer
 }
@@ -465,4 +496,27 @@ fn game_spec<T, F: FnOnce(&GameSpec) -> T>(renderer: &Renderer, cont: F) -> T {
         shooter_spec: shooter_spec_id,
         specs: specs.as_slice(),
     })
+}
+
+// ---------------------------------------------------------------------
+// tests
+
+#[test]
+fn test_encoding() {
+    let ship = Ship{
+        spec: 1,
+        trans: Transform::pos(Vec2 { x: 400., y: 300.005 }),
+        vel: Vec2 { x: 0., y: 0.9999 },
+        not_firing_for: 100000.01,
+        accel: false,
+        rotating: Rotating::Still,
+        camera: Camera { pos: Vec2 { x: 0., y: 0.011999 }, vel: Vec2 { x: 0., y: 1.19988 } }
+    };
+    let mut actors = Actors::new();
+    actors.insert(0, Actor::Ship(ship));
+    let game = PlayerGame{
+        game: Game { actors: actors },
+        player_id: 0
+    };
+    assert!(game == bincode::decode(bincode::encode(&game).ok().unwrap()).ok().unwrap());
 }

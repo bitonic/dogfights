@@ -339,27 +339,3 @@ impl Actors {
         }
     }
 }
-
-
-// ---------------------------------------------------------------------
-// tests
-
-#[test]
-fn test_encoding() {
-    let ship = Ship{
-        spec: 1,
-        trans: Transform::pos(Vec2 { x: 400., y: 300.005 }),
-        vel: Vec2 { x: 0., y: 0.9999 },
-        not_firing_for: 100000.01,
-        accel: false,
-        rotating: Rotating::Still,
-        camera: Camera { pos: Vec2 { x: 0., y: 0.011999 }, vel: Vec2 { x: 0., y: 1.19988 } }
-    };
-    let mut actors = Actors::new();
-    actors.insert(0, Actor::Ship(ship));
-    let game = PlayerGame{
-        game: Game { actors: actors },
-        player_id: 0
-    };
-    assert!(game == bincode::decode(bincode::encode(&game).ok().unwrap()).ok().unwrap());
-}
