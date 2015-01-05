@@ -221,10 +221,12 @@ impl<'a> Server<'a> {
             sdl2::timer::delay(wait_ms);
 
             // Render if we have at least one player id to follow
-            for first_player_id in state.game.actors.actors.keys() {
-                player_id = Some(*first_player_id);
-                break
-            };
+            if player_id.is_none() {
+                for first_player_id in state.game.actors.actors.keys() {
+                    player_id = Some(*first_player_id);
+                    break
+                }
+            }
             match player_id {
                 Some(player_id) => {
                     let camera = state.game.actors.get(player_id).is_ship().camera;
