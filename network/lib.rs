@@ -1,5 +1,6 @@
 #![feature(slicing_syntax)]
 #![allow(unstable)]
+#![warn(unused_results)]
 extern crate "rustc-serialize" as rustc_serialize;
 extern crate sdl2;
 extern crate bincode;
@@ -241,14 +242,6 @@ pub struct Server {
     clients: Arc<Mutex<HashMap<SocketAddr, Conn>>>,
 }
 
-fn other_io_error<T>(msg: &'static str) -> IoResult<T> {
-    Err(IoError {
-        kind: IoErrorKind::OtherIoError,
-        desc: msg,
-        detail: None,
-    })
-}
-
 impl Server {
     pub fn new<A: ToSocketAddr>(addr: A) -> IoResult<Server> {
         let sock = try!(UdpSocket::bind(addr));
@@ -263,14 +256,18 @@ impl Server {
         match clients.entry(addr) {
             Entry::Vacant(_) => {
                 error!("Sending to unknown client {}", addr);
-                other_io_error("network::Server::send: Sending to unknown client")
+                Err(IoError{
+                    kind: IoErrorKind::NotConnected,
+                    desc: "network::Server::send: unknown address",
+                    detail: Some(format!("Address received: {}", addr))
+                })
             },
             Entry::Occupied(mut entry) => {
                 let mut buf = [0; MAX_PACKET_SIZE];
                 match encode_and_send(entry.get_mut(), &mut self.socket, &mut buf, addr, MsgType::Normal, body) {
                     Err(err) => {
                         match err.kind {
-                            IoErrorKind::Closed => { entry.remove(); },
+                            IoErrorKind::Closed => { let _ = entry.remove(); },
                             _ => (),
                         };
                         Err(err)
