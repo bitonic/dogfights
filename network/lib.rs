@@ -111,6 +111,15 @@ impl Conn {
 }
 
 fn encode_and_send<T: Encodable>(conn: &mut Conn, sock: &mut UdpSocket, buf: &mut [u8], addr: SocketAddr, msg_type: MsgType, body: &T) -> IoResult<()> {
+    let now = sdl2::get_ticks();
+    if now - conn.remote.received > CONN_TIMEOUT {
+        return Err(IoError{
+            kind: IoErrorKind::Closed,
+            desc: "network::encode_and_send: Connection timed out",
+            detail: None,
+        });
+    }
+
     #[derive(RustcEncodable)]
     struct Packet<'a, T: 'a> {
         header: Header,
@@ -178,7 +187,7 @@ fn recv_and_decode<T: Decodable>(conn: &mut Conn, sock: &mut UdpSocket, buf: &mu
     loop {
         let addr = try!(recv_and_decode_1(sock, buf));
         match try!(recv_and_decode_2(conn, addr, sock, buf)) {
-            None => {},
+            None => (),
             Some(body) => return Ok((addr, body))
         }
     }
@@ -207,6 +216,7 @@ impl Client {
     }
 
     pub fn send<T: Encodable>(&mut self, body: &T) -> IoResult<()> {
+        // TODO handle disconnections
         encode_and_send(&mut self.conn, &mut self.socket, &mut self.buf, self.connected_to, MsgType::Normal, &body)
     }
 
@@ -257,7 +267,16 @@ impl Server {
             },
             Entry::Occupied(mut entry) => {
                 let mut buf = [0; MAX_PACKET_SIZE];
-                encode_and_send(entry.get_mut(), &mut self.socket, &mut buf, addr, MsgType::Normal, body)
+                match encode_and_send(entry.get_mut(), &mut self.socket, &mut buf, addr, MsgType::Normal, body) {
+                    Err(err) => {
+                        match err.kind {
+                            IoErrorKind::Closed => { entry.remove(); },
+                            _ => (),
+                        };
+                        Err(err)
+                    },
+                    Ok(()) => Ok(())
+                }
             }
         }
     }
