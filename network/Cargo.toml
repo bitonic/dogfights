@@ -1,0 +1,16 @@
+[package]
+name = "network"
+version = "0.0.1"
+authors = ["Francesco Mazzoli <f@mazzo.li>"]
+
+[lib]
+name = "network"
+path = "lib.rs"
+
+[dependencies]
+rustc-serialize = "^0"
+log = "^0"
+sdl2 = "^0"
+
+[dependencies.bincode]
+path = "../bincode"

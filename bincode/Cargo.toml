@@ -1,0 +1,14 @@
+[package]
+name = "bincode"
+version = "0.0.4"
+authors = ["Ty Overby <ty@pre-alpha.com>", "Francesco Mazzoli <f@mazzo.li>"]
+
+repository = "https://github.com/TyOverby/bincode"
+documentation = "http://tyoverby.github.io/bincode/bincode/"
+keywords = ["binary", "encode", "decode", "serialize", "deserialize"]
+
+license = "MIT"
+description = "A binary serialization / deserialization strategy and implementation."
+
+[dependencies]
+rustc-serialize = "^0"
