@@ -1,8 +1,4 @@
-/target/
-/Cargo.lock
-/*/target/
-/*/Cargo.lock
-
+# *** Emacs stuff
 
 *~
 \#*\#
@@ -35,3 +31,10 @@ tramp
 
 # cask packages
 .cask/
+
+# *** Rust stuff
+
+/target/
+/Cargo.lock
+/*/target/
+/*/Cargo.lock
