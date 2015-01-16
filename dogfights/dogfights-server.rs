@@ -2,7 +2,7 @@
 extern crate dogfights;
 extern crate getopts;
 
-use getopts::{optopt, getopts, usage, OptGroup};
+use getopts::{optopt, optflag, getopts, usage, OptGroup};
 use std::str::FromStr;
 
 fn print_usage(program: String, opts: &[OptGroup]) {
@@ -15,6 +15,7 @@ fn main() {
 
     let opts = &[
         optopt("p", "port", "The port to bind to", "PORT"),
+        optflag("x", "display", "Whether to show a display or not")
     ];
     let matches = match getopts(args.tail(), opts) {
         Ok(m) => m,
@@ -27,5 +28,6 @@ fn main() {
             Some(p) => p
         },
     };
-    dogfights::server(&("127.0.0.1", port));
+    let display = matches.opt_present("x");
+    dogfights::server(&("127.0.0.1", port), display);
 }

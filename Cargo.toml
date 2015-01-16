@@ -33,3 +33,24 @@ path = "./bincode"
 
 [dependencies.network]
 path = "./network"
+
+[dependencies.geometry]
+path = "./geometry"
+
+[dependencies.physics]
+path = "./physics"
+
+[dependencies.conf]
+path = "./conf"
+
+[dependencies.actors]
+path = "./actors"
+
+[dependencies.input]
+path = "./input"
+
+[dependencies.render]
+path = "./render"
+
+[dependencies.specs]
+path = "./render"

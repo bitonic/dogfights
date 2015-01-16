@@ -1,12 +1,20 @@
 #![feature(slicing_syntax)]
 #![warn(unused_results)]
 #![allow(unstable)]
-extern crate bincode;
-extern crate network;
 extern crate sdl2;
 extern crate sdl2_image;
 extern crate "rustc-serialize" as rustc_serialize;
 #[macro_use] extern crate log;
+
+extern crate bincode;
+extern crate network;
+extern crate geometry;
+extern crate physics;
+extern crate specs;
+extern crate actors;
+extern crate render;
+extern crate conf;
+extern crate input;
 
 use rustc_serialize::{Encodable, Encoder, Decoder};
 use sdl2::SdlResult;
@@ -21,19 +29,11 @@ use std::thread::Thread;
 use std::sync::mpsc::{channel, Receiver};
 
 use actors::*;
-use constants::*;
+use conf::*;
 use geometry::*;
 use input::*;
 use render::*;
 use specs::*;
-
-pub mod actors;
-pub mod constants;
-pub mod geometry;
-pub mod input;
-pub mod physics;
-pub mod render;
-pub mod specs;
 
 #[derive(PartialEq, Clone, Show, RustcEncodable, RustcDecodable)]
 struct Game {
@@ -90,9 +90,9 @@ impl Game {
     }
 }
 
-fn render_game(game: &Game, spec: &GameSpec, renderer: &Renderer, trans: &Transform) -> SdlResult<()> {
-    try!(render_map(spec.map, renderer, &trans.pos));
-    try!(render_actors(&game.actors, spec, renderer, trans));
+fn render_game(render: &RenderEnv, game: &Game, spec: &GameSpec, trans: &Transform) -> SdlResult<()> {
+    try!(render.map(&spec.map, &trans.pos));
+    try!(render.actors(&game.actors, spec, trans));
     Ok(())
 }
 
@@ -103,7 +103,7 @@ type SnapshotId = u32;
 
 #[derive(PartialEq, Clone)]
 struct Server<'a> {
-    game_spec: &'a GameSpec<'a>,
+    game_spec: &'a GameSpec,
     game: Game,
     clients: HashMap<SocketAddr, ActorId>,
 }
@@ -126,7 +126,7 @@ impl<'a> Server<'a> {
         false
     }
 
-    fn new(spec: &'a GameSpec<'a>, game: Game) -> Server<'a> {
+    fn new(spec: &'a GameSpec, game: Game) -> Server<'a> {
         Server{
             game_spec: spec,
             game: game,
@@ -201,7 +201,7 @@ impl<'a> Server<'a> {
         }
     }
 
-    fn run<A: ToSocketAddr>(self, addr: &A, renderer: &Renderer, spec: &GameSpec) {
+    fn run<A: ToSocketAddr>(self, addr: &A, render: &Option<RenderEnv>, spec: &GameSpec) {
         let addr = addr.to_socket_addr().ok().expect("Server.run: could not get SocketAddr");
         let server = network::Server::new(addr).ok().expect("Server.worker: Could not create network server");
         let mut worker_server = server.clone();
@@ -229,23 +229,28 @@ impl<'a> Server<'a> {
             state.broadcast_game(&mut server.clone());
 
             // Render if we have at least one player id to follow
-            if state.game.actors.len() == 0 {
-                player_id = None;
-            };
-            if player_id.is_none() {
-                for first_player_id in state.game.actors.keys() {
-                    player_id = Some(*first_player_id);
-                    break
-                }
-            };
-            match player_id {
-                Some(player_id) => {
-                    let camera = state.game.actors.get(player_id).unwrap().is_ship().camera;
-                    render_game(&state.game, spec, renderer, &camera.transform()).ok().expect("Couldn't render game");
-                    renderer.present();
+            match *render {
+                None => (),
+                Some(ref render) => {
+                    if state.game.actors.len() == 0 {
+                        player_id = None;
+                    };
+                    if player_id.is_none() {
+                        for first_player_id in state.game.actors.keys() {
+                            player_id = Some(*first_player_id);
+                            break
+                        }
+                    };
+                    match player_id {
+                        Some(player_id) => {
+                            let camera = state.game.actors.get(player_id).unwrap().is_ship().camera;
+                            render_game(render, &state.game, spec, &camera.transform()).ok().expect("Couldn't render game");
+                            render.renderer.present();
+                        },
+                        None => {}
+                    }
                 },
-                None => {}
-            }
+            };
 
             // FIXME: maybe time more precisely -- e.g. take into
             // account the time it took to generate the state
@@ -256,14 +261,22 @@ impl<'a> Server<'a> {
     }
 }
 
-pub fn server<A: ToSocketAddr>(addr: &A) {
-    let renderer = init_sdl(false);
-    game_spec(&renderer, |spec| {
-        // Actors
-        let game = Game{actors: Actors::new(), time: 0.};
-        let server = Server::new(spec, game);
-        server.run(addr, &renderer, spec);
-    })
+pub fn server<A: ToSocketAddr>(addr: &A, display: bool) {
+    let render = if display {
+        let renderer = init_sdl(false);
+        let textures = init_textures(&renderer);
+        Some(RenderEnv{
+            renderer: renderer,
+            textures: textures,
+        })
+    } else {
+        init_headless_sdl();
+        None
+    };
+    let spec = init_spec();
+    let game = Game{actors: Actors::new(), time: 0.};
+    let server = Server::new(&spec, game);
+    server.run(addr, &render, &spec);
 }
 
 // ---------------------------------------------------------------------
@@ -285,12 +298,12 @@ impl PlayerGame {
         }
     }
 
-    fn render(&self, spec: &GameSpec, renderer: &Renderer) -> SdlResult<()> {
+    fn render(&self, render: &RenderEnv, spec: &GameSpec) -> SdlResult<()> {
         let camera = self.game.actors.get(self.player_id).unwrap().is_ship().camera;
-        render_game(&self.game, spec, renderer, &camera.transform())
+        render_game(render, &self.game, spec, &camera.transform())
     }
 
-    fn run(self, spec: &GameSpec, renderer: &Renderer) {
+    fn run(self, render: &RenderEnv, spec: &GameSpec) {
         let mut prev_time = sdl2::get_ticks();
         let mut accumulator = 0.;
         let mut state = self;
@@ -325,38 +338,44 @@ impl PlayerGame {
                 state = current;
             }
 
-            state.render(spec, renderer).ok().expect("Failed to render the state");
-            renderer.present();
+            state.render(render, spec).ok().expect("Failed to render the state");
+            render.renderer.present();
         }
     }
 }
 
 pub fn client() {
     let renderer = init_sdl(true);
-    game_spec(&renderer, |spec| {
-        // Actors
-        let mut actors = Actors::new();
-        let ship_pos = Vec2 {x: SCREEN_WIDTH/2., y: SCREEN_HEIGHT/2.};
-        let player_id = actors.add(Actor::Ship(Ship::new(spec.ship_spec, ship_pos)));
-        let _ = actors.add(Actor::Shooter(
-            Shooter{
-                spec: spec.shooter_spec,
-                time_since_fire: 0.,
-            }));
-        let game = Game{actors: actors, time: 0.};
-
-        let client = PlayerGame{
-            game: game,
-            player_id: player_id,
-        };
-        client.run(spec, &renderer);
-    })
+    let textures = init_textures(&renderer);
+    let render = RenderEnv{renderer: renderer, textures: textures};
+    let spec = init_spec();
+    // Actors
+    let mut actors = Actors::new();
+    let ship_pos = Vec2 {x: SCREEN_WIDTH/2., y: SCREEN_HEIGHT/2.};
+    let player_id = actors.add(Actor::Ship(Ship::new(spec.ship_spec, ship_pos)));
+    let _ = actors.add(Actor::Shooter(
+        Shooter{
+            spec: spec.shooter_spec,
+            time_since_fire: 0.,
+        }));
+    let game = Game{actors: actors, time: 0.};
+    
+    let client = PlayerGame{
+        game: game,
+        player_id: player_id,
+    };
+    client.run(&render, &spec);
 }
 
 pub fn remote_client<A: ToSocketAddr, B: ToSocketAddr>(server_addr: A, bind_addr: B) {
     let renderer = init_sdl(false);
-    let mut client =
-        network::Client::new(server_addr, bind_addr).ok().expect("remote_client: could not create network client");
+    let textures = init_textures(&renderer);
+    let render = RenderEnv{renderer: renderer, textures: textures};
+    let spec = init_spec();
+    let mut client = match network::Client::new(server_addr, bind_addr) {
+        Err(err) => panic!("remote_client: could not create network client: {}", err),
+        Ok(x)    => x
+    };
     let mut worker_handle = client.handle().clone();
     let (tx, rx) = channel();
     let _ = Thread::spawn(move || {
@@ -369,41 +388,45 @@ pub fn remote_client<A: ToSocketAddr, B: ToSocketAddr>(server_addr: A, bind_addr
         }
     });
 
-    game_spec(&renderer, |spec| {
-
-        let mut input = Input{
-            quit: false,
-            accel: false,
-            firing: false,
-            rotating: Rotating::Still,
-            paused: false,
-        };
-        let mut prev_input;
-        // Send the first to make sure the server knows we're there.
-        client.handle().send(&input).ok().expect("remote_client: couldn't send to server");
-        loop {
-            prev_input = input;
-            input = input.process_events();
-            debug!("Input: {:?}", input);
-            if input.quit {
-                debug!("Quitting");
-                break
-            }
-            if input != prev_input {
-                debug!("Input changed, sending it");
-                client.handle().send(&input).ok().expect("remote_client: couldn't send to server");
-            }
-            let game: PlayerGame = rx.recv().ok().unwrap();
-            game.render(spec, &renderer).ok().expect("remote_client: couldn't render");
-            renderer.present();
-        }});
+    let mut input = Input{
+        quit: false,
+        accel: false,
+        firing: false,
+        rotating: Rotating::Still,
+        paused: false,
+    };
+    let mut prev_input;
+    // Send the first to make sure the server knows we're there.
+    match client.handle().send(&input) {
+        Err(err) => panic!("remote_client: couldn't send to server {}", err),
+        Ok(()) => (),
+    };
+    loop {
+        prev_input = input;
+        input = input.process_events();
+        debug!("Input: {:?}", input);
+        if input.quit {
+            debug!("Quitting");
+            break
+        }
+        if input != prev_input {
+            debug!("Input changed, sending it");
+            client.handle().send(&input).ok().expect("remote_client: couldn't send to server");
+        }
+        let game: PlayerGame = rx.recv().ok().unwrap();
+        game.render(&render, &spec).ok().expect("remote_client: couldn't render");
+        render.renderer.present();
+    }
 }
 
 // ---------------------------------------------------------------------
 // Init
 
+const PLANES_TEXTURE_ID: TextureId = 0;
+const MAP_TEXTURE_ID: TextureId = 1;
+
 fn init_sdl(vsync: bool) -> Renderer {
-    sdl2::init(sdl2::INIT_VIDEO);
+    sdl2::init(sdl2::INIT_EVERYTHING | sdl2::INIT_TIMER);
     let window = sdl2::video::Window::new(
         "Dogfights",
         sdl2::video::WindowPos::PosUndefined, sdl2::video::WindowPos::PosUndefined,
@@ -416,24 +439,40 @@ fn init_sdl(vsync: bool) -> Renderer {
     renderer
 }
 
-fn game_spec<T, F: FnOnce(&GameSpec) -> T>(renderer: &Renderer, cont: F) -> T {
-    // Specs
+fn init_headless_sdl() {
+    sdl2::init(sdl2::INIT_TIMER);
+}
+
+fn init_textures(renderer: &Renderer) -> Textures {
+    let mut textures = HashMap::new();
+
     let planes_surface: sdl2::surface::Surface =
         sdl2_image::LoadSurface::from_file(&("assets/planes.png".parse()).unwrap()).ok().unwrap();
     planes_surface.set_color_key(true, Color::RGB(0xba, 0xfe, 0xca)).ok().unwrap();
     let planes_texture = renderer.create_texture_from_surface(&planes_surface).ok().unwrap();
+    let _ = textures.insert(PLANES_TEXTURE_ID, planes_texture);
+
+    let map_surface = sdl2_image::LoadSurface::from_file(&("assets/background.png".parse()).unwrap()).ok().unwrap();
+    let map_texture = renderer.create_texture_from_surface(&map_surface).ok().unwrap();
+    let _ = textures.insert(MAP_TEXTURE_ID, map_texture);
+
+    textures
+}
+
+fn init_spec() -> GameSpec {
+    // Specs
     let mut specs = Vec::new();
     let bullet_spec = BulletSpec {
-        sprite: &Sprite {
-            texture: &planes_texture,
+        sprite: Sprite {
+            texture: PLANES_TEXTURE_ID,
             rect: Rect{pos: Vec2{x: 424., y: 140.}, w: 3., h: 12.},
             center: Vec2{x: 1., y: 6.},
             angle: 90.,
         },
         vel: 1000.,
         lifetime: 5000.,
-        bbox: &BBox {
-            rects: &[
+        bbox: BBox {
+            rects: vec![
                 Rect{
                     pos: Vec2{y: -1.5, x: -6.},
                     h: 3.,
@@ -449,14 +488,14 @@ fn game_spec<T, F: FnOnce(&GameSpec) -> T>(renderer: &Renderer, cont: F) -> T {
         accel: 800.,
         friction: 0.02,
         gravity: 100.,
-        sprite: &Sprite{
-            texture: &planes_texture,
+        sprite: Sprite{
+            texture: PLANES_TEXTURE_ID,
             rect: Rect{pos: Vec2{x: 128., y: 96.}, w: 30., h: 24.},
             center: Vec2{x: 15., y: 12.},
             angle: 90.,
         },
-        sprite_accel: &Sprite {
-            texture: &planes_texture,
+        sprite_accel: Sprite {
+            texture: PLANES_TEXTURE_ID,
             rect: Rect{pos: Vec2{x: 88., y: 96.}, w: 30., h: 24.},
             center: Vec2{x: 15., y: 12.},
             angle: 90.,
@@ -464,8 +503,8 @@ fn game_spec<T, F: FnOnce(&GameSpec) -> T>(renderer: &Renderer, cont: F) -> T {
         bullet_spec: bullet_spec_id,
         firing_interval: 1.,
         shoot_from: Vec2{x: 18., y: 0.},
-        bbox: &BBox{
-            rects: &[
+        bbox: BBox{
+            rects: vec![
                 Rect{
                     pos: Vec2{x: -12., y: -5.5},
                     w: 25.,
@@ -482,8 +521,8 @@ fn game_spec<T, F: FnOnce(&GameSpec) -> T>(renderer: &Renderer, cont: F) -> T {
     let ship_spec_id: SpecId = 1;
     specs.push(Spec::ShipSpec(ship_spec));
     let shooter_spec = ShooterSpec {
-        sprite: &Sprite {
-            texture: &planes_texture,
+        sprite: Sprite {
+            texture: PLANES_TEXTURE_ID,
             rect: Rect{pos: Vec2{x: 48., y: 248.}, w: 32., h: 24.},
             center: Vec2{x: 16., y: 12.},
             angle: 90.,
@@ -497,26 +536,24 @@ fn game_spec<T, F: FnOnce(&GameSpec) -> T>(renderer: &Renderer, cont: F) -> T {
     };
     let shooter_spec_id: SpecId = 2;
     specs.push(Spec::ShooterSpec(shooter_spec));
-    let map_surface = sdl2_image::LoadSurface::from_file(&("assets/background.png".parse()).unwrap()).ok().unwrap();
-    let map_texture = renderer.create_texture_from_surface(&map_surface).ok().unwrap();
-    let map = &Map {
+    let map = Map {
         w: SCREEN_WIDTH*10.,
         h: SCREEN_HEIGHT*10.,
         background_color: Color::RGB(0x58, 0xB7, 0xFF),
-        background_texture: &map_texture,
+        background_texture: MAP_TEXTURE_ID,
     };
-    let camera_spec = &CameraSpec {
+    let camera_spec = CameraSpec {
         accel: 1.2,
         h_pad: 220.,
         v_pad: 220. * SCREEN_HEIGHT / SCREEN_WIDTH,
     };
-    cont(&GameSpec{
+    GameSpec{
         map: map,
         camera_spec: camera_spec,
         ship_spec: ship_spec_id,
         shooter_spec: shooter_spec_id,
-        specs: specs.as_slice(),
-    })
+        specs: specs,
+    }
 }
 
 // ---------------------------------------------------------------------

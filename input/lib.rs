@@ -1,9 +1,9 @@
 extern crate sdl2;
+extern crate "rustc-serialize" as rustc_serialize;
 
 // ---------------------------------------------------------------------
 // Input
 
-// FIXME: efficient serialization using u8
 #[derive(PartialEq, Clone, Copy, Show, RustcDecodable, RustcEncodable)]
 pub enum Rotating {
     Still,
@@ -57,9 +57,4 @@ impl Input {
         };
         input
     }
-}
-
-#[test]
-fn test() {
-    assert!(Rotating::Still != Rotating::Right);
 }

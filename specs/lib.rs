@@ -1,16 +1,25 @@
 extern crate sdl2;
 
+extern crate geometry;
+
+use std::collections::HashMap;
 use sdl2::pixels::Color;
 use sdl2::render::Texture;
 
 use geometry::*;
 
 // ---------------------------------------------------------------------
+// Textures
+
+pub type TextureId = u32;
+pub type Textures = HashMap<TextureId, Texture>;
+
+// ---------------------------------------------------------------------
 // Sprites
 
 #[derive(PartialEq, Clone, Copy)]
-pub struct Sprite<'a> {
-    pub texture: &'a Texture,
+pub struct Sprite {
+    pub texture: TextureId,
     pub rect: Rect,
     pub center: Vec2,
     // If the sprite is already rotated by some angle
@@ -21,14 +30,14 @@ pub struct Sprite<'a> {
 // Map
 
 #[derive(PartialEq, Clone, Copy)]
-pub struct Map<'a> {
+pub struct Map {
     pub w: f32,
     pub h: f32,
     pub background_color: Color, 
-    pub background_texture: &'a Texture,
+    pub background_texture: TextureId,
 }
 
-impl<'a> Map<'a> {
+impl Map {
     pub fn bound(&self, p: Vec2) -> Vec2 {
         // TODO handle points that are badly negative
         fn f(n: f32, m: f32) -> f32 {
@@ -61,11 +70,11 @@ impl<'a> Map<'a> {
 // BBox
 
 #[derive(PartialEq, Clone)]
-pub struct BBox<'a> {
-    pub rects: &'a [Rect],
+pub struct BBox {
+    pub rects: Vec<Rect>,
 }
 
-impl<'a> BBox<'a> {
+impl BBox {
     pub fn overlapping(this: BBox, this_t: &Transform, other: BBox, other_t: &Transform) -> bool {
         let mut overlap = false;
         for this in this.rects.iter() {
@@ -93,45 +102,45 @@ pub struct CameraSpec {
     pub h_pad: f32,
 }
 
-#[derive(PartialEq, Clone, Copy)]
-pub struct ShipSpec<'a> {
+#[derive(PartialEq, Clone)]
+pub struct ShipSpec {
     pub rotation_vel: f32,
     pub rotation_vel_accel: f32,
     pub accel: f32,
     pub friction: f32,
     pub gravity: f32,
-    pub sprite: &'a Sprite<'a>,
-    pub sprite_accel: &'a Sprite<'a>,
+    pub sprite: Sprite,
+    pub sprite_accel: Sprite,
     pub bullet_spec: SpecId,
     pub firing_interval: f32,
     pub shoot_from: Vec2,
-    pub bbox: &'a BBox<'a>,
+    pub bbox: BBox,
 }
 
-#[derive(PartialEq, Clone, Copy)]
-pub struct BulletSpec<'a> {
-    pub sprite: &'a Sprite<'a>,
+#[derive(PartialEq, Clone)]
+pub struct BulletSpec {
+    pub sprite: Sprite,
     pub vel: f32,
     pub lifetime: f32,
-    pub bbox: &'a BBox<'a>,
+    pub bbox: BBox,
 }
 
 #[derive(PartialEq, Clone, Copy)]
-pub struct ShooterSpec<'a> {
-    pub sprite: &'a Sprite<'a>,
+pub struct ShooterSpec {
+    pub sprite: Sprite,
     pub trans: Transform,
     pub bullet_spec: SpecId,
     pub firing_rate: f32,
 }
 
-#[derive(PartialEq, Clone, Copy)]
-pub enum Spec<'a> {
-    ShipSpec(ShipSpec<'a>),
-    ShooterSpec(ShooterSpec<'a>),
-    BulletSpec(BulletSpec<'a>),
+#[derive(PartialEq, Clone)]
+pub enum Spec {
+    ShipSpec(ShipSpec),
+    ShooterSpec(ShooterSpec),
+    BulletSpec(BulletSpec),
 }
 
-impl<'a> Spec<'a> {
+impl Spec {
     pub fn is_ship(&self) -> &ShipSpec {
         match *self {
             Spec::ShipSpec(ref spec) => spec,
@@ -154,17 +163,17 @@ impl<'a> Spec<'a> {
     }
 }
 
-#[derive(PartialEq, Clone, Copy)]
-pub struct GameSpec<'a> {
-    pub map: &'a Map<'a>,
-    pub camera_spec: &'a CameraSpec,
+#[derive(PartialEq, Clone)]
+pub struct GameSpec {
+    pub map: Map,
+    pub camera_spec: CameraSpec,
     pub ship_spec: SpecId,
     pub shooter_spec: SpecId,
-    pub specs: &'a [Spec<'a>],
+    pub specs: Vec<Spec>,
 }
 
-impl<'a> GameSpec<'a> {
-    pub fn get_spec(&self, spec_id: SpecId) -> &'a Spec<'a> {
+impl GameSpec {
+    pub fn get_spec(&self, spec_id: SpecId) -> &Spec {
         &self.specs[spec_id as usize]
     }
 }

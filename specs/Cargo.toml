@@ -1,19 +1,18 @@
 [package]
-name = "network"
+name = "specs"
 version = "0.0.1"
 authors = ["Francesco Mazzoli <f@mazzo.li>"]
 
 [lib]
-name = "network"
+name = "specs"
 path = "lib.rs"
 
 [dependencies]
 rustc-serialize = "^0"
-log = "^0"
 sdl2 = "^0"
 
-[dependencies.bincode]
-path = "../bincode"
+[dependencies.geometry]
+path = "../geometry"
 
 [dependencies.conf]
 path = "../conf"

@@ -1,0 +1,13 @@
+[package]
+name = "input"
+version = "0.0.1"
+authors = ["Francesco Mazzoli <f@mazzo.li>"]
+
+[lib]
+name = "input"
+path = "lib.rs"
+
+[dependencies]
+sdl2 = "^0"
+rustc-serialize = "^0"
+

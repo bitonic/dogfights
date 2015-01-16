@@ -6,6 +6,8 @@ extern crate sdl2;
 extern crate bincode;
 #[macro_use] extern crate log;
 
+extern crate conf;
+
 use std::io::net::udp::UdpSocket;
 use std::io::net::ip::{SocketAddr, ToSocketAddr};
 use std::collections::HashMap;
@@ -18,12 +20,7 @@ use std::sync::mpsc::{channel, Sender, Receiver};
 use std::ptr;
 use rustc_serialize::{Encodable, Decodable};
 
-// 10s timeout
-pub const CONN_TIMEOUT: u32 = 10000;
-pub const PROTO_ID: u32 = 0xD05F1575;
-pub const MAX_PACKET_SIZE: usize = 1400;
-// 1s ping interval
-pub const PING_INTERVAL: u32 = 1000;
+use conf::*;
 
 // ---------------------------------------------------------------------
 // Packet

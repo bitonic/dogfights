@@ -1,3 +1,4 @@
+#![allow(unstable)]
 extern crate sdl2;
 extern crate "rustc-serialize" as rustc_serialize;
 

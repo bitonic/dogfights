@@ -1,14 +1,21 @@
+#![allow(unstable)]
 extern crate "rustc-serialize" as rustc_serialize;
+
+extern crate geometry;
+extern crate input;
+extern crate specs;
+extern crate conf;
+extern crate physics;
 
 use std::collections::HashMap;
 use std::collections::hash_map::{Keys, Values, Iter};
 use std::num::Float;
 use rustc_serialize::{Encodable, Encoder, Decodable, Decoder};
 
-use constants::*;
 use geometry::*;
 use input::*;
 use specs::*;
+use conf::*;
 
 #[derive(PartialEq, Clone, Show, Copy, RustcEncodable, RustcDecodable)]
 pub struct Camera {
@@ -100,7 +107,7 @@ pub struct Ship {
 }
 
 struct ShipState<'a> {
-    spec: &'a ShipSpec<'a>,
+    spec: &'a ShipSpec,
     accel: bool,
     rotation: f32,
 }

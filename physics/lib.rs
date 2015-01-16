@@ -1,5 +1,7 @@
 extern crate sdl2;
 
+extern crate geometry;
+
 use geometry::*;
 
 #[derive(PartialEq, Clone, Copy, Show)]
