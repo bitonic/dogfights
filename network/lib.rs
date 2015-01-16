@@ -12,12 +12,18 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::io::{IoError, IoResult, IoErrorKind, BufWriter, BufReader};
 use std::sync::{Arc, Mutex};
+use std::ops::DerefMut;
+use std::thread::{Thread};
+use std::sync::mpsc::{channel, Sender, Receiver};
+use std::ptr;
 use rustc_serialize::{Encodable, Decodable};
 
-// 1s timeout
+// 10s timeout
 pub const CONN_TIMEOUT: u32 = 10000;
 pub const PROTO_ID: u32 = 0xD05F1575;
 pub const MAX_PACKET_SIZE: usize = 1400;
+// 1s ping interval
+pub const PING_INTERVAL: u32 = 1000;
 
 // ---------------------------------------------------------------------
 // Packet
@@ -112,6 +118,7 @@ impl Conn {
 }
 
 fn encode_and_send<T: Encodable>(conn: &mut Conn, sock: &mut UdpSocket, buf: &mut [u8], addr: SocketAddr, msg_type: MsgType, body: &T) -> IoResult<()> {
+    debug!("encode_and_send: sending message to {}", addr);
     let now = sdl2::get_ticks();
     if now - conn.remote.received > CONN_TIMEOUT {
         return Err(IoError{
@@ -142,9 +149,20 @@ fn encode_and_send<T: Encodable>(conn: &mut Conn, sock: &mut UdpSocket, buf: &mu
     Ok(())
 }
 
+fn send_ping(conn: &mut Conn, sock: &mut UdpSocket, addr: SocketAddr) -> IoResult<()> {
+    let mut buf: [u8; 200] = [0; 200];
+    encode_and_send(conn, sock, &mut buf, addr, MsgType::Ping, &())
+}
+
+fn send_pong(conn: &mut Conn, sock: &mut UdpSocket, addr: SocketAddr) -> IoResult<()> {
+    let mut buf: [u8; 200] = [0; 200];
+    encode_and_send(conn, sock, &mut buf, addr, MsgType::Pong, &())
+}
+
 fn recv_and_decode_1(sock: &mut UdpSocket, buf: &mut [u8]) -> IoResult<SocketAddr> {
-    // TODO handle "good" io errors
+    debug!("recv_and_decode: blocking to receive");
     let (_, addr) = try!(sock.recv_from(buf));
+    debug!("recv_and_decode: received message from {}", addr);
     Ok(addr)
 }
 
@@ -154,7 +172,6 @@ fn recv_and_decode_2<T: Decodable>(conn: &mut Conn, addr: SocketAddr, sock: &mut
         header: Header,
         body: T,
     }
-    let mut pong_buf: [u8; 200] = [0; 200];
 
     let mut r = BufReader::new(buf);
     // TODO handle "good" io errors
@@ -173,7 +190,7 @@ fn recv_and_decode_2<T: Decodable>(conn: &mut Conn, addr: SocketAddr, sock: &mut
                 conn.tickle(&packet.header.local);
                 match packet.header.msg_type {
                     MsgType::Ping => {
-                        try!(encode_and_send(conn, sock, &mut pong_buf, addr, MsgType::Pong, &()));
+                        try!(send_pong(conn, sock, addr));
                         Ok(None)
                     },
                     MsgType::Pong => Ok(None),
@@ -184,52 +201,107 @@ fn recv_and_decode_2<T: Decodable>(conn: &mut Conn, addr: SocketAddr, sock: &mut
     }
 }
 
-fn recv_and_decode<T: Decodable>(conn: &mut Conn, sock: &mut UdpSocket, buf: &mut [u8]) -> IoResult<(SocketAddr, T)> {
-    loop {
-        let addr = try!(recv_and_decode_1(sock, buf));
-        match try!(recv_and_decode_2(conn, addr, sock, buf)) {
-            None => (),
-            Some(body) => return Ok((addr, body))
+// ---------------------------------------------------------------------
+// Client
+
+pub struct ClientHandle {
+    connected_to: SocketAddr,
+    socket: UdpSocket,
+    conn: Arc<Mutex<Conn>>,
+    buf: [u8; MAX_PACKET_SIZE],
+}
+
+impl Clone for ClientHandle {
+    fn clone(&self) -> ClientHandle {
+        unsafe {
+            ClientHandle{
+                connected_to: self.connected_to,
+                socket: self.socket.clone(),
+                conn: self.conn.clone(),
+                buf: ptr::read(&self.buf),
+            }
         }
     }
 }
 
-// ---------------------------------------------------------------------
-// Client
-
 pub struct Client {
-    connected_to: SocketAddr,
-    socket: UdpSocket,
-    conn: Conn,
-    buf: [u8; MAX_PACKET_SIZE],
+    handle: ClientHandle,
+    ping_worker: Sender<()>,
 }
 
 impl Client {
     pub fn new<A: ToSocketAddr, B: ToSocketAddr>(connect_to: A, listen_on: B) -> IoResult<Client> {
         let connected_to = try!(connect_to.to_socket_addr());
         let sock = try!(UdpSocket::bind(listen_on));
+        let conn = Arc::new(Mutex::new(Conn::new()));
+        let (tx, rx) = channel();
+        Client::ping_worker(&sock, &conn, connected_to, rx);
         Ok(Client{
-            connected_to: connected_to,
-            socket: sock,
-            conn: Conn::new(),
-            buf: [0; MAX_PACKET_SIZE],
+            handle: ClientHandle{
+                connected_to: connected_to,
+                socket: sock,
+                conn: conn,
+                buf: [0; MAX_PACKET_SIZE],
+            },
+            ping_worker: tx,
         })
     }
 
+    pub fn handle(&mut self) -> &mut ClientHandle {
+        &mut self.handle
+    }
+
+    fn ping_worker(sock: &UdpSocket, conn: &Arc<Mutex<Conn>>, addr: SocketAddr, close_signal: Receiver<()>) {
+        let mut sock = sock.clone();
+        let conn = conn.clone();
+        let _ = Thread::spawn(move || {
+            loop {
+                let close = close_signal.try_recv().is_ok();
+                if close {
+                    break;
+                };
+
+                // This block is crucial: we don't want to hold the lock
+                // until the delay is done!
+                {
+                    let mut conn = conn.lock().unwrap();
+                    match send_ping(conn.deref_mut(), &mut sock, addr) {
+                        Ok(()) => (),
+                        Err(err) => debug!("network::Client::ping_worker: got error {}", err),
+                    };
+                }
+                sdl2::timer::delay(PING_INTERVAL as usize);
+            }
+        });
+    }
+}
+
+impl ClientHandle {
     pub fn send<T: Encodable>(&mut self, body: &T) -> IoResult<()> {
         // TODO handle disconnections
-        encode_and_send(&mut self.conn, &mut self.socket, &mut self.buf, self.connected_to, MsgType::Normal, &body)
+        let mut conn = self.conn.lock().unwrap();
+        encode_and_send(conn.deref_mut(), &mut self.socket, &mut self.buf, self.connected_to, MsgType::Normal, &body)
     }
 
     pub fn recv<T: Decodable>(&mut self) -> IoResult<T> {
         loop {
-            let (addr, body) = try!(recv_and_decode(&mut self.conn, &mut self.socket, &mut self.buf));
-            if addr != self.connected_to {
-                debug!("Got message from unknown sender {}, expected {}", addr, self.connected_to);
+            let addr = try!(recv_and_decode_1(&mut self.socket, &mut self.buf));
+            if addr == self.connected_to {
+                let mut conn = self.conn.lock().unwrap();
+                match try!(recv_and_decode_2(conn.deref_mut(), addr, &mut self.socket, &mut self.buf)) {
+                    None => (),
+                    Some(body) => return Ok(body)
+                }
             } else {
-                return Ok(body);
+                debug!("Got message from unknown sender {}, expected {}", addr, self.connected_to);
             }
         }
+    }
+}
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        self.ping_worker.send(()).ok().unwrap();
     }
 }
 
@@ -282,19 +354,21 @@ impl Server {
         let mut buf = [0; MAX_PACKET_SIZE];
         loop {
             let addr = try!(recv_and_decode_1(&mut self.socket, &mut buf));
-            let mut clients = self.clients.lock().unwrap();
-            // Create new connection if needed
-            let body = match clients.entry(addr) {
-                // TODO is there a nice way to float the conn out?
-                // do I have to define a closure or another
-                // function?
-                Entry::Vacant(entry) => {
-                    let conn = entry.insert(Conn::new());
-                    try!(recv_and_decode_2(conn, addr, &mut self.socket, &mut buf))
-                },
-                Entry::Occupied(mut entry) => {
-                    let conn = entry.get_mut();
-                    try!(recv_and_decode_2(conn, addr, &mut self.socket, &mut buf))
+            let body = {
+                let mut clients = self.clients.lock().unwrap();
+                // Create new connection if needed
+                match clients.entry(addr) {
+                    // TODO is there a nice way to float the conn out?
+                    // do I have to define a closure or another
+                    // function?
+                    Entry::Vacant(entry) => {
+                        let conn = entry.insert(Conn::new());
+                        try!(recv_and_decode_2(conn, addr, &mut self.socket, &mut buf))
+                    },
+                    Entry::Occupied(mut entry) => {
+                        let conn = entry.get_mut();
+                        try!(recv_and_decode_2(conn, addr, &mut self.socket, &mut buf))
+                    }
                 }
             };
             match body {
@@ -316,6 +390,21 @@ impl Server {
             None       => None,
             Some(conn) => Some(*conn),
         }
+    }
+}
+
+// ---------------------------------------------------------------------
+// Utilities
+
+#[inline]
+pub fn handle_recv_result<T>(err: IoResult<T>) -> Option<T> {
+    match err {
+        Ok(x) => Some(x),
+        Err(err) => {
+            // TODO better reporting on what's good or bad
+            debug!("network::handle_recv_result: got error {}", err);
+            None
+        },
     }
 }
 

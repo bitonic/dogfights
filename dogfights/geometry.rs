@@ -1,7 +1,6 @@
 extern crate sdl2;
 extern crate "rustc-serialize" as rustc_serialize;
 
-use std::num::FloatMath;
 use std::num::Float;
 use std::f32::consts::PI;
 use std::ops::{Add, Sub, Mul, Div};

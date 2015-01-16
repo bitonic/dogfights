@@ -1,14 +1,12 @@
-#![feature(associated_types)]
-#![feature(default_type_params)]
-#![feature(globs)]
-#![feature(old_orphan_check)]
-#![feature(phase)]
 #![feature(slicing_syntax)]
+#![warn(unused_results)]
+#![allow(unstable)]
 extern crate bincode;
+extern crate network;
 extern crate sdl2;
 extern crate sdl2_image;
 extern crate "rustc-serialize" as rustc_serialize;
-#[phase(plugin, link)] extern crate log;
+#[macro_use] extern crate log;
 
 use rustc_serialize::{Encodable, Encoder, Decoder};
 use sdl2::SdlResult;
@@ -17,11 +15,10 @@ use sdl2::render::Renderer;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::io::net::ip::{SocketAddr, ToSocketAddr};
-use std::io::{IoResult};
 use std::slice::SliceExt;
-use std::sync::{Arc, Mutex, MutexGuard};
-use std::thread::{Thread, JoinGuard};
-use std::ops::Deref;
+use std::sync::{Arc, Mutex};
+use std::thread::Thread;
+use std::sync::mpsc::{channel, Receiver};
 
 use actors::*;
 use constants::*;
@@ -34,7 +31,6 @@ pub mod actors;
 pub mod constants;
 pub mod geometry;
 pub mod input;
-pub mod network;
 pub mod physics;
 pub mod render;
 pub mod specs;
@@ -42,6 +38,7 @@ pub mod specs;
 #[derive(PartialEq, Clone, Show, RustcEncodable, RustcDecodable)]
 struct Game {
     actors: Actors,
+    time: f32,
 }
 
 #[derive(PartialEq, Clone, Copy, Show)]
@@ -63,7 +60,7 @@ impl Game {
     fn advance(&self, spec: &GameSpec, inputs: &Vec<ShipInput>, dt: f32) -> Game {
         // First move everything, spawn new stuff
         let mut advanced_actors = Actors::prepare_new(&self.actors);
-        for (actor_id, actor) in self.actors.actors.iter() {
+        for (actor_id, actor) in self.actors.iter() {
             let actor_input = ShipInput::lookup(inputs, *actor_id);
             match actor.advance(spec, &mut advanced_actors, actor_input, dt) {
                 None                 => {},
@@ -73,7 +70,7 @@ impl Game {
         
         // Then compute interactions
         let mut interacted_actors = Actors::prepare_new(&advanced_actors);
-        for (actor_id, actor) in advanced_actors.actors.iter() {
+        for (actor_id, actor) in advanced_actors.iter() {
             match actor.interact(spec, &advanced_actors) {
                 None                   => {},
                 Some(interacted_actor) => { interacted_actors.insert(*actor_id, interacted_actor) },
@@ -83,6 +80,7 @@ impl Game {
         // Done
         Game{
             actors: interacted_actors,
+            time: self.time + dt,
         }
     }
 
@@ -136,27 +134,28 @@ impl<'a> Server<'a> {
         }
     }
 
-    fn worker(queue: Arc<Mutex<Vec<Message>>>, server: &mut network::Server) -> ! {
+    fn worker(queue: Arc<Mutex<Vec<Message>>>, quit: Receiver<()>, server: &mut network::Server) {
         loop {
-            let (addr, input): (SocketAddr, IoResult<Input>) =
-                server.recv().ok().expect("Server.worker: Could not receive");
-            match input {
-                Err(err) =>
-                    println!("Server.worker: couldn't decode message: {}", err),
-                Ok(input) => {
+            let quit = quit.try_recv().is_ok();
+            if quit {
+                break;
+            };
+
+            let result: Option<(SocketAddr, Input)> = network::handle_recv_result(server.recv());
+            match result {
+                None => (),
+                Some((addr, input)) => {
                     let msg = Message{from: addr, input: input};
-                    {
-                        let mut msgs = queue.lock().unwrap();
-                        msgs.push(msg);
-                    }
+                    let mut msgs = queue.lock().unwrap();
+                    msgs.push(msg);
                 }
             }
         }
     }
 
     fn drain(queue: Arc<Mutex<Vec<Message>>>) -> Vec<Message> {
-        let mut msgs: MutexGuard<Vec<Message>> = queue.lock().unwrap();
-        let old_msgs: Vec<Message> = msgs.deref().clone();
+        let mut msgs = queue.lock().unwrap();
+        let old_msgs = msgs.clone();
         msgs.clear();
         old_msgs
     }
@@ -169,24 +168,37 @@ impl<'a> Server<'a> {
                     inputs.push(ShipInput{ship: *entry.get(), input: msg.input}),
                 Entry::Vacant(entry) => {
                     let ship_id = self.game.add_ship(self.game_spec);
-                    let _ = entry.set(ship_id);
+                    let _ = entry.insert(ship_id);
                 }
             }
         };
         inputs
     }
 
-    fn broadcast_game(&self, server: &mut network::Server) -> IoResult<()> {
+    fn broadcast_game(&mut self, server: &mut network::Server) {
         // FIXME: encode once
+        let mut dead: Vec<(SocketAddr, ActorId)> = Vec::new();
+
         for (addr, player_id) in self.clients.iter() {
             // FIXME: encode more efficiently...
             let remote_game = PlayerGame{
                 game: self.game.clone(),
                 player_id: *player_id,
             };
-            try!(server.send(*addr, &remote_game));
+            match server.send(*addr, &remote_game) {
+                Ok(()) => {},
+                Err(err) => debug!("Server::broadcast_game: got error {}", err),
+            };
+            // Remove if inactive
+            if !server.active_conn(addr) {
+                dead.push((*addr, *player_id));
+            }
         };
-        Ok(())
+
+        for client in dead.iter() {
+            let _ = self.clients.remove(&client.0).unwrap();
+            self.game.actors.remove(client.1);
+        }
     }
 
     fn run<A: ToSocketAddr>(self, addr: &A, renderer: &Renderer, spec: &GameSpec) {
@@ -195,18 +207,18 @@ impl<'a> Server<'a> {
         let mut worker_server = server.clone();
         let queue_local = Arc::new(Mutex::new(Vec::new()));
         let queue_worker = queue_local.clone();
-        let guard: JoinGuard<()> = Thread::spawn(move || {
-            Server::worker(queue_worker, &mut worker_server)
+        let (quit_tx, quit_rx) = channel();
+        let _ = Thread::spawn(move || {
+            Server::worker(queue_worker, quit_rx, &mut worker_server)
         });
-        guard.detach();
 
-        let wait_ms = (TIME_STEP * 1000.) as uint;
+        let wait_ms = (TIME_STEP * 1000.) as usize;
         let mut state = self;
         let mut player_id: Option<ActorId> = None;
         let mut prev_time = sdl2::get_ticks();
         loop {
             let time = sdl2::get_ticks();
-            debug!("Server main loop.  Time interval: {}", time - prev_time);
+            debug!("Server::run: main loop.  Time interval: {}", time - prev_time);
             prev_time = time;
 
             if Server::should_quit() { break }
@@ -214,28 +226,33 @@ impl<'a> Server<'a> {
             let inputs = Server::drain(queue_local.clone());
             let inputs = state.prepare_inputs(&inputs);
             state.game = state.game.advance(state.game_spec, &inputs, TIME_STEP);
-            state.broadcast_game(&mut server.clone()).ok().expect("Couldn't broadcast messages");
-
-            // FIXME: maybe time more precisely -- e.g. take into
-            // account the time it took to generate the state
-            sdl2::timer::delay(wait_ms);
+            state.broadcast_game(&mut server.clone());
 
             // Render if we have at least one player id to follow
+            if state.game.actors.len() == 0 {
+                player_id = None;
+            };
             if player_id.is_none() {
-                for first_player_id in state.game.actors.actors.keys() {
+                for first_player_id in state.game.actors.keys() {
                     player_id = Some(*first_player_id);
                     break
                 }
-            }
+            };
             match player_id {
                 Some(player_id) => {
-                    let camera = state.game.actors.get(player_id).is_ship().camera;
+                    let camera = state.game.actors.get(player_id).unwrap().is_ship().camera;
                     render_game(&state.game, spec, renderer, &camera.transform()).ok().expect("Couldn't render game");
                     renderer.present();
                 },
                 None => {}
             }
+
+            // FIXME: maybe time more precisely -- e.g. take into
+            // account the time it took to generate the state
+            sdl2::timer::delay(wait_ms);
         }
+
+        quit_tx.send(()).ok().unwrap();
     }
 }
 
@@ -243,7 +260,7 @@ pub fn server<A: ToSocketAddr>(addr: &A) {
     let renderer = init_sdl(false);
     game_spec(&renderer, |spec| {
         // Actors
-        let game = Game{actors: Actors::new()};
+        let game = Game{actors: Actors::new(), time: 0.};
         let server = Server::new(spec, game);
         server.run(addr, &renderer, spec);
     })
@@ -269,7 +286,7 @@ impl PlayerGame {
     }
 
     fn render(&self, spec: &GameSpec, renderer: &Renderer) -> SdlResult<()> {
-        let camera = self.game.actors.get(self.player_id).is_ship().camera;
+        let camera = self.game.actors.get(self.player_id).unwrap().is_ship().camera;
         render_game(&self.game, spec, renderer, &camera.transform())
     }
 
@@ -326,7 +343,7 @@ pub fn client() {
                 spec: spec.shooter_spec,
                 time_since_fire: 0.,
             }));
-        let game = Game{actors: actors};
+        let game = Game{actors: actors, time: 0.};
 
         let client = PlayerGame{
             game: game,
@@ -340,7 +357,20 @@ pub fn remote_client<A: ToSocketAddr, B: ToSocketAddr>(server_addr: A, bind_addr
     let renderer = init_sdl(false);
     let mut client =
         network::Client::new(server_addr, bind_addr).ok().expect("remote_client: could not create network client");
+    let mut worker_handle = client.handle().clone();
+    let (tx, rx) = channel();
+    let _ = Thread::spawn(move || {
+        loop {
+            let res: Option<PlayerGame> = network::handle_recv_result(worker_handle.recv());
+            match res {
+                None => (),
+                Some(game) => tx.send(game).ok().unwrap(),
+            }
+        }
+    });
+
     game_spec(&renderer, |spec| {
+
         let mut input = Input{
             quit: false,
             accel: false,
@@ -350,33 +380,22 @@ pub fn remote_client<A: ToSocketAddr, B: ToSocketAddr>(server_addr: A, bind_addr
         };
         let mut prev_input;
         // Send the first to make sure the server knows we're there.
-        client.send(&input).ok().expect("remote_client: couldn't send to server");
+        client.handle().send(&input).ok().expect("remote_client: couldn't send to server");
         loop {
             prev_input = input;
             input = input.process_events();
-            debug!("Input: {}", input);
+            debug!("Input: {:?}", input);
             if input.quit {
                 debug!("Quitting");
                 break
             }
             if input != prev_input {
                 debug!("Input changed, sending it");
-                client.send(&input).ok().expect("remote_client: couldn't send to server");
+                client.handle().send(&input).ok().expect("remote_client: couldn't send to server");
             }
-            loop {
-                let game: IoResult<PlayerGame> =
-                    client.recv().ok().expect("remote_client: couldn't receive from server");
-                match game {
-                    Ok(game) => {
-                        game.render(spec, &renderer).ok().expect("remote_client: couldn't render");
-                        renderer.present();
-                        break
-                    },
-                    Err(err) => {
-                        println!("Error while receiving state from server: {}", err)
-                    },
-                }
-            };
+            let game: PlayerGame = rx.recv().ok().unwrap();
+            game.render(spec, &renderer).ok().expect("remote_client: couldn't render");
+            renderer.present();
         }});
 }
 
@@ -388,12 +407,12 @@ fn init_sdl(vsync: bool) -> Renderer {
     let window = sdl2::video::Window::new(
         "Dogfights",
         sdl2::video::WindowPos::PosUndefined, sdl2::video::WindowPos::PosUndefined,
-        (SCREEN_WIDTH as int), (SCREEN_HEIGHT as int),
+        (SCREEN_WIDTH as isize), (SCREEN_HEIGHT as isize),
         sdl2::video::SHOWN).ok().unwrap();
     let vsync_flag = if vsync { sdl2::render::PRESENTVSYNC } else { sdl2::render::RendererFlags::empty() };
     let flags = sdl2::render::ACCELERATED | vsync_flag;
     let renderer = Renderer::from_window(window, sdl2::render::RenderDriverIndex::Auto, flags).ok().unwrap();
-    renderer.set_logical_size((SCREEN_WIDTH as int), (SCREEN_HEIGHT as int)).ok().unwrap();
+    renderer.set_logical_size((SCREEN_WIDTH as isize), (SCREEN_HEIGHT as isize)).ok().unwrap();
     renderer
 }
 

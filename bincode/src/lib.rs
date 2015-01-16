@@ -2,6 +2,7 @@
 #![crate_type = "rlib"]
 #![crate_type = "dylib"]
 #![allow(unstable)]
+#![warn(unused_results)]
 
 extern crate "rustc-serialize" as rustc_serialize;
 

@@ -69,7 +69,7 @@ pub fn render_map(map: &Map, renderer: &Renderer, pos: &Vec2) -> SdlResult<()> {
         x: t.x,
         y: t.y,
     };
-    let to_rect = |p: Vec2| -> Option<sdl2::rect::Rect> {
+    let to_rect = |&: p: Vec2| -> Option<sdl2::rect::Rect> {
         Some(sdl2::rect::Rect {
             x: p.x as i32,
             y: p.y as i32,
@@ -136,7 +136,7 @@ fn render_shooter(shooter: &Shooter, sspec: &GameSpec, renderer: &Renderer, tran
 
 pub fn render_actors(actors: &Actors, spec: &GameSpec, renderer: &Renderer, trans: &Transform) -> SdlResult<()> {
     try!(render_map(spec.map, renderer, &trans.pos));
-    for actor in actors.actors.values() {
+    for actor in actors.values() {
         try!(render_actor(actor, spec, renderer, trans));
     };
     Ok(())

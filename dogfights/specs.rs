@@ -165,6 +165,6 @@ pub struct GameSpec<'a> {
 
 impl<'a> GameSpec<'a> {
     pub fn get_spec(&self, spec_id: SpecId) -> &'a Spec<'a> {
-        &self.specs[spec_id as uint]
+        &self.specs[spec_id as usize]
     }
 }

@@ -5,33 +5,31 @@ version = "0.0.1"
 authors = [ "Francesco Mazzoli <f@mazzo.li>" ]
 
 [lib]
-name = "dogfights-lib"
-path = "src/main.rs"
+name = "dogfights"
+path = "dogfights/main.rs"
 
 [[bin]]
-name = "dogfights"
-path = "src/dogfights.rs"
+name = "dogfights-local"
+path = "dogfights/dogfights-local.rs"
 
 [[bin]]
 name = "dogfights-server"
-path = "src/dogfights-server.rs"
+path = "dogfights/dogfights-server.rs"
 
 [[bin]]
 name = "dogfights-remote"
-path = "src/dogfights-remote.rs"
+path = "dogfights/dogfights-remote.rs"
 
 [dependencies]
-rustc-serialize = "0.2.3"
-log = "0.1.7"
-
-[dependencies.sdl2]
-# git = "https://github.com/AngryLawyer/rust-sdl2"
-path = "/home/bitonic/src/rust-sdl2"
+rustc-serialize = "0.2.7"
+log = "^0"
+sdl2 = "0.0.16"
 
 [dependencies.sdl2_image]
-# git = "https://github.com/bitonic/rust-sdl2_image"
-path = "/home/bitonic/src/rust-sdl2_image"
+git = "https://github.com/xsleonard/rust-sdl2_image"
 
 [dependencies.bincode]
-# git = "https://github.com/TyOverby/bincode"
-path = "/home/bitonic/src/bincode"
+path = "./bincode"
+
+[dependencies.network]
+path = "./network"

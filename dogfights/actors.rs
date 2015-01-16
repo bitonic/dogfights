@@ -1,7 +1,8 @@
 extern crate "rustc-serialize" as rustc_serialize;
 
 use std::collections::HashMap;
-use std::num::FloatMath;
+use std::collections::hash_map::{Keys, Values, Iter};
+use std::num::Float;
 use rustc_serialize::{Encodable, Encoder, Decodable, Decoder};
 
 use constants::*;
@@ -31,8 +32,8 @@ impl Camera {
     fn bottom(&self) -> f32 { self.pos.y + SCREEN_HEIGHT }
 
     #[inline]
-    pub fn advance(&self, sspec: &GameSpec, ship_vel: Vec2, ship_trans: Transform, dt: f32) -> Camera {
-        let &mut cam = self;
+    pub fn advance(self, sspec: &GameSpec, ship_vel: Vec2, ship_trans: Transform, dt: f32) -> Camera {
+        let mut cam = self;
         let spec = sspec.camera_spec;
         let map = sspec.map;
 
@@ -200,7 +201,7 @@ impl Ship {
                 trans: trans + shoot_from,
                 age: 0.,
             };
-            actors.add(Actor::Bullet(bullet));
+            let _ = actors.add(Actor::Bullet(bullet));
         }
         
         let new = Ship {
@@ -233,7 +234,7 @@ impl Shooter {
                 trans: spec.trans,
                 age: 0.,
             };
-            actors.add(Actor::Bullet(bullet));
+            let _ = actors.add(Actor::Bullet(bullet));
         }
         Some(Shooter{spec: self.spec, time_since_fire: time_since_fire})
     }
@@ -280,12 +281,12 @@ pub type ActorId = u32;
 
 #[derive(PartialEq, Clone, Show)]
 pub struct Actors {
-    pub actors: HashMap<ActorId, Actor>,
-    pub count: ActorId,
+    actors: HashMap<ActorId, Actor>,
+    count: ActorId,
 }
 
-impl<E, S: Encoder<E>> Encodable<S, E> for Actors {
-    fn encode(&self, s: &mut S) -> Result<(), E> {
+impl Encodable for Actors {
+    fn encode<S: Encoder>(&self, s: &mut S) -> Result<(), S::Error> {
         let len: u32 = self.actors.len() as u32;
         try!(len.encode(s));
         for pair in self.actors.iter() {
@@ -295,10 +296,10 @@ impl<E, S: Encoder<E>> Encodable<S, E> for Actors {
     }
 }
 
-impl<E, D: Decoder<E>> Decodable<D, E> for Actors {
-    fn decode(d: &mut D) -> Result<Actors, E> {
+impl Decodable for Actors {
+    fn decode<D: Decoder>(d: &mut D) -> Result<Actors, D::Error> {
         let len: u32 = try!(Decodable::decode(d));
-        let len: uint = len as uint;
+        let len: usize = len as usize;
         let mut actors = HashMap::new();
         for _ in range(0, len) {
             let (actor_id, actor) = try!(Decodable::decode(d));
@@ -324,18 +325,35 @@ impl Actors {
     pub fn add(&mut self, actor: Actor) -> ActorId {
         let actor_id = self.count;
         self.count += 1;
-        self.actors.insert(actor_id, actor);
+        self.insert(actor_id, actor);
         actor_id
     }
 
-    pub fn insert(&mut self, actor_id: ActorId, actor: Actor) {
-        self.actors.insert(actor_id, actor);
+    pub fn remove(&mut self, actor_id: ActorId) {
+        let _ = self.actors.remove(&actor_id).unwrap();
     }
 
-    pub fn get(&self, actor_id: ActorId) -> &Actor {
-        match self.actors.get(&actor_id) {
-            None => unreachable!(),
-            Some(actor) => actor,
-        }
+    pub fn insert(&mut self, actor_id: ActorId, actor: Actor) {
+        let _ = self.actors.insert(actor_id, actor);
+    }
+
+    pub fn get(&self, actor_id: ActorId) -> Option<&Actor> {
+        self.actors.get(&actor_id)
+    }
+
+    pub fn keys(&self) -> Keys<ActorId, Actor> {
+        self.actors.keys()
+    }
+
+    pub fn values(&self) -> Values<ActorId, Actor> {
+        self.actors.values()
+    }
+
+    pub fn iter(&self) -> Iter<ActorId, Actor> {
+        self.actors.iter()
+    }
+
+    pub fn len(&self) -> usize {
+        self.actors.len()
     }
 }

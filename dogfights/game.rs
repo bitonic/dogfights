@@ -198,7 +198,7 @@ impl<'a> Map<'a> {
 // ---------------------------------------------------------------------
 // Actors
 
-type ActorId = uint;
+type ActorId = usize;
 
 #[derive(PartialEq, Clone, Copy, Show, RustcEncodable, RustcDecodable)]
 enum Actor {
@@ -244,7 +244,7 @@ impl Actor {
     }
 }
 
-type SpecId = uint;
+type SpecId = usize;
 
 #[derive(PartialEq, Clone, Copy)]
 enum Spec<'a> {
@@ -764,7 +764,7 @@ impl Game {
 // ---------------------------------------------------------------------
 // Server
 
-type SnapshotId = uint;
+type SnapshotId = usize;
 
 #[derive(PartialEq, Clone)]
 struct Server<'a> {
@@ -866,7 +866,7 @@ impl<'a> Server<'a> {
         });
         guard.detach();
 
-        let wait_ms = (TIME_STEP * 1000.) as uint;
+        let wait_ms = (TIME_STEP * 1000.) as usize;
         let mut state = self;
         loop {
             let quit = Server::should_quit();

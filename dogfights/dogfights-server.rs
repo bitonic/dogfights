@@ -1,4 +1,5 @@
-extern crate "dogfights-lib" as dogfights_lib;
+#![allow(unstable)]
+extern crate dogfights;
 extern crate getopts;
 
 use getopts::{optopt, getopts, usage, OptGroup};
@@ -26,5 +27,5 @@ fn main() {
             Some(p) => p
         },
     };
-    dogfights_lib::server(&("127.0.0.1", port));
+    dogfights::server(&("127.0.0.1", port));
 }
