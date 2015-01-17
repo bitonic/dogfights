@@ -6,15 +6,16 @@ extern crate sdl2_image;
 extern crate "rustc-serialize" as rustc_serialize;
 #[macro_use] extern crate log;
 
-extern crate bincode;
-extern crate network;
-extern crate geometry;
-extern crate physics;
-extern crate specs;
 extern crate actors;
-extern crate render;
+extern crate bincode;
 extern crate conf;
+extern crate geometry;
 extern crate input;
+extern crate interpolate;
+extern crate network;
+extern crate physics;
+extern crate render;
+extern crate specs;
 
 use rustc_serialize::{Encodable, Encoder, Decoder};
 use sdl2::SdlResult;
@@ -24,82 +25,20 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::io::net::ip::{SocketAddr, ToSocketAddr};
 use std::slice::SliceExt;
+use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread::Thread;
-use std::sync::mpsc::{channel, Receiver};
 
 use actors::*;
 use conf::*;
 use geometry::*;
 use input::*;
+use interpolate::*;
 use render::*;
 use specs::*;
 
-#[derive(PartialEq, Clone, Show, RustcEncodable, RustcDecodable)]
-struct Game {
-    actors: Actors,
-    time: f32,
-}
-
-#[derive(PartialEq, Clone, Copy, Show)]
-struct ShipInput {
-    ship: ActorId,
-    input: Input,
-}
-
-impl ShipInput {
-    fn lookup(inputs: &Vec<ShipInput>, actor_id: ActorId) -> Option<Input> {
-        for input in inputs.iter() {
-            if input.ship == actor_id { return Some(input.input) }
-        };
-        None
-    }
-}
-
-impl Game {
-    fn advance(&self, spec: &GameSpec, inputs: &Vec<ShipInput>, dt: f32) -> Game {
-        // First move everything, spawn new stuff
-        let mut advanced_actors = Actors::prepare_new(&self.actors);
-        for (actor_id, actor) in self.actors.iter() {
-            let actor_input = ShipInput::lookup(inputs, *actor_id);
-            match actor.advance(spec, &mut advanced_actors, actor_input, dt) {
-                None                 => {},
-                Some(advanced_actor) => { advanced_actors.insert(*actor_id, advanced_actor) },
-            }
-        };
-        
-        // Then compute interactions
-        let mut interacted_actors = Actors::prepare_new(&advanced_actors);
-        for (actor_id, actor) in advanced_actors.iter() {
-            match actor.interact(spec, &advanced_actors) {
-                None                   => {},
-                Some(interacted_actor) => { interacted_actors.insert(*actor_id, interacted_actor) },
-            }
-        };
-
-        // Done
-        Game{
-            actors: interacted_actors,
-            time: self.time + dt,
-        }
-    }
-
-    fn add_ship(&mut self, spec: &GameSpec) -> ActorId {
-        let ship_pos = Vec2 {x: SCREEN_WIDTH/2., y: SCREEN_HEIGHT/2.};
-        self.actors.add(Actor::Ship(Ship::new(spec.ship_spec, ship_pos)))
-    }
-}
-
-fn render_game(render: &RenderEnv, game: &Game, spec: &GameSpec, trans: &Transform) -> SdlResult<()> {
-    try!(render.map(&spec.map, &trans.pos));
-    try!(render.actors(&game.actors, spec, trans));
-    Ok(())
-}
-
 // ---------------------------------------------------------------------
 // Server
-
-type SnapshotId = u32;
 
 #[derive(PartialEq, Clone)]
 struct Server<'a> {
@@ -244,7 +183,7 @@ impl<'a> Server<'a> {
                     match player_id {
                         Some(player_id) => {
                             let camera = state.game.actors.get(player_id).unwrap().is_ship().camera;
-                            render_game(render, &state.game, spec, &camera.transform()).ok().expect("Couldn't render game");
+                            render.game(&state.game, spec, &camera.transform()).ok().expect("Couldn't render game");
                             render.renderer.present();
                         },
                         None => {}
@@ -300,7 +239,7 @@ impl PlayerGame {
 
     fn render(&self, render: &RenderEnv, spec: &GameSpec) -> SdlResult<()> {
         let camera = self.game.actors.get(self.player_id).unwrap().is_ship().camera;
-        render_game(render, &self.game, spec, &camera.transform())
+        render.game(&self.game, spec, &camera.transform())
     }
 
     fn run(self, render: &RenderEnv, spec: &GameSpec) {
@@ -335,7 +274,10 @@ impl PlayerGame {
                     current = new;
                 }
                 // TODO: interpolate previous and current
-                state = current;
+                state = PlayerGame{
+                    player_id: current.player_id,
+                    game: interpolate_game(&previous.game, &current.game, accumulator / TIME_STEP),
+                };
             }
 
             state.render(render, spec).ok().expect("Failed to render the state");

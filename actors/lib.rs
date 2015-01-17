@@ -364,3 +364,58 @@ impl Actors {
         self.actors.len()
     }
 }
+
+#[derive(PartialEq, Clone, Copy, Show)]
+pub struct ShipInput {
+    pub ship: ActorId,
+    pub input: Input,
+}
+
+impl ShipInput {
+    pub fn lookup(inputs: &Vec<ShipInput>, actor_id: ActorId) -> Option<Input> {
+        for input in inputs.iter() {
+            if input.ship == actor_id { return Some(input.input) }
+        };
+        None
+    }
+}
+
+#[derive(PartialEq, Clone, Show, RustcEncodable, RustcDecodable)]
+pub struct Game {
+    pub actors: Actors,
+    pub time: f32,
+}
+
+impl Game {
+    pub fn advance(&self, spec: &GameSpec, inputs: &Vec<ShipInput>, dt: f32) -> Game {
+        // First move everything, spawn new stuff
+        let mut advanced_actors = Actors::prepare_new(&self.actors);
+        for (actor_id, actor) in self.actors.iter() {
+            let actor_input = ShipInput::lookup(inputs, *actor_id);
+            match actor.advance(spec, &mut advanced_actors, actor_input, dt) {
+                None                 => {},
+                Some(advanced_actor) => { advanced_actors.insert(*actor_id, advanced_actor) },
+            }
+        };
+        
+        // Then compute interactions
+        let mut interacted_actors = Actors::prepare_new(&advanced_actors);
+        for (actor_id, actor) in advanced_actors.iter() {
+            match actor.interact(spec, &advanced_actors) {
+                None                   => {},
+                Some(interacted_actor) => { interacted_actors.insert(*actor_id, interacted_actor) },
+            }
+        };
+
+        // Done
+        Game{
+            actors: interacted_actors,
+            time: self.time + dt,
+        }
+    }
+
+    pub fn add_ship(&mut self, spec: &GameSpec) -> ActorId {
+        let ship_pos = Vec2 {x: SCREEN_WIDTH/2., y: SCREEN_HEIGHT/2.};
+        self.actors.add(Actor::Ship(Ship::new(spec.ship_spec, ship_pos)))
+    }
+}

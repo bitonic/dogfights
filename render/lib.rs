@@ -21,7 +21,7 @@ pub struct RenderEnv {
 }
 
 impl RenderEnv {
-    pub fn sprite(&self, sprite: &Sprite, trans: &Transform) -> SdlResult<()> {
+    fn sprite(&self, sprite: &Sprite, trans: &Transform) -> SdlResult<()> {
         let texture = self.textures.get(&sprite.texture).unwrap();
         let dst = Rect{
             pos: trans.pos - sprite.center,
@@ -34,7 +34,7 @@ impl RenderEnv {
             Some(sprite.center.point()), sdl2::render::RendererFlip::None)
     }
 
-    pub fn map(&self, map: &Map, pos: &Vec2) -> SdlResult<()> {
+    fn map(&self, map: &Map, pos: &Vec2) -> SdlResult<()> {
         let background_texture = self.textures.get(&map.background_texture).unwrap();
 
         // Fill the whole screen with the background color
@@ -107,7 +107,7 @@ impl RenderEnv {
         }
     }
 
-    pub fn bullet(&self, bullet: &Bullet, sspec: &GameSpec, trans: &Transform) -> SdlResult<()> {
+    fn bullet(&self, bullet: &Bullet, sspec: &GameSpec, trans: &Transform) -> SdlResult<()> {
         let spec = sspec.get_spec(bullet.spec).is_bullet();
         let trans = trans.adjust(&bullet.trans);
         try!(self.sprite(&spec.sprite, &trans));
@@ -115,7 +115,7 @@ impl RenderEnv {
         self.bbox(&spec.bbox, &trans)
     }
 
-    pub fn bbox(&self, bbox: &BBox,trans: &Transform) -> SdlResult<()> {
+    fn bbox(&self, bbox: &BBox,trans: &Transform) -> SdlResult<()> {
         try!(self.renderer.set_draw_color(Color::RGB(0xFF, 0x00, 0x00)));
         for rect in bbox.rects.iter() {
             let (tl, tr, bl, br) = rect.transform(trans);
@@ -127,7 +127,7 @@ impl RenderEnv {
         Ok(())
     }
 
-    pub fn ship(&self, ship: &Ship, sspec: &GameSpec, trans: &Transform) -> SdlResult<()> {
+    fn ship(&self, ship: &Ship, sspec: &GameSpec, trans: &Transform) -> SdlResult<()> {
         let trans = trans.adjust(&ship.trans);
         let spec = sspec.get_spec(ship.spec).is_ship();
 
@@ -144,16 +144,22 @@ impl RenderEnv {
         self.bbox(&spec.bbox, &trans)
     }
 
-    pub fn shooter(&self, shooter: &Shooter, sspec: &GameSpec, trans: &Transform) -> SdlResult<()> {
+    fn shooter(&self, shooter: &Shooter, sspec: &GameSpec, trans: &Transform) -> SdlResult<()> {
         let spec = sspec.get_spec(shooter.spec).is_shooter();
         self.sprite(&spec.sprite, &trans.adjust(&spec.trans))
     }
 
-    pub fn actors(&self, actors: &Actors, spec: &GameSpec, trans: &Transform) -> SdlResult<()> {
+    fn actors(&self, actors: &Actors, spec: &GameSpec, trans: &Transform) -> SdlResult<()> {
         try!(self.map(&spec.map, &trans.pos));
         for actor in actors.values() {
             try!(self.actor(actor, spec, trans));
         };
+        Ok(())
+    }
+
+    pub fn game(&self, game: &Game, spec: &GameSpec, trans: &Transform) -> SdlResult<()> {
+        try!(self.map(&spec.map, &trans.pos));
+        try!(self.actors(&game.actors, spec, trans));
         Ok(())
     }
 }

@@ -50,6 +50,17 @@ impl Sub<Vec2> for Transform {
     }
 }
 
+impl Mul<f32> for Transform {
+    type Output = Transform;
+
+    fn mul(self, other: f32) -> Transform {
+        Transform{
+            pos: self.pos * other,
+            rotation: self.rotation * other,
+        }
+    }
+}
+
 impl Transform {
     pub fn id() -> Transform {
         Transform{pos: Vec2{x: 0., y: 0.}, rotation: 0.}
@@ -109,7 +120,8 @@ impl Div<f32> for Vec2 {
 }
 
 impl Vec2 {
-    pub fn point(&self) -> sdl2::rect::Point {
+    #[inline]
+    pub fn point(self) -> sdl2::rect::Point {
         sdl2::rect::Point{x: self.x as i32, y: self.y as i32}
     }
 
@@ -124,23 +136,32 @@ impl Vec2 {
 
     // We rotate clockwise because SDL does so too -- the y axes starts
     // from 0 at the top and decreases going down.
-    pub fn rotate(&self, rotation: f32) -> Vec2 {
+    #[inline]
+    pub fn rotate(self, rotation: f32) -> Vec2 {
         Vec2 {
             x: self.x * rotation.cos() + self.y * rotation.sin(),
             y: self.y * rotation.cos() - self.x * rotation.sin(),
         }
     }
 
-    pub fn transform(&self, trans: &Transform) -> Vec2 {
+    #[inline]
+    pub fn transform(self, trans: &Transform) -> Vec2 {
         self.rotate(trans.rotation) + trans.pos
     }
 
-    pub fn mag(&self) -> f32 {
+    #[inline]
+    pub fn mag(self) -> f32 {
         (self.x*self.x + self.y*self.y).sqrt()
     }
 
+    #[inline]
     pub fn zero() -> Vec2 {
         Vec2{x: 0., y: 0.}
+    }
+
+    #[inline]
+    pub fn norm(self) -> Vec2 {
+        self / self.mag()
     }
 }
 

@@ -54,3 +54,6 @@ path = "./render"
 
 [dependencies.specs]
 path = "./render"
+
+[dependencies.interpolate]
+path = "./interpolate"
