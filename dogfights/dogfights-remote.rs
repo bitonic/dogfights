@@ -32,5 +32,5 @@ fn main() {
             Some(p) => p
         },
     };
-    dogfights::remote_client(server.as_slice(), ("127.0.0.1", port))
+    dogfights::run_remote(server.as_slice(), ("127.0.0.1", port))
 }

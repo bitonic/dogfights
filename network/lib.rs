@@ -131,6 +131,7 @@ fn encode_and_send<T: Encodable>(conn: &mut Conn, sock: &mut UdpSocket, buf: &mu
         body: &'a T,
     }
 
+    // println!("Bumping local seq");
     conn.local.seq.bump();
     let packet = Packet{
         header: Header::new(conn.local, msg_type),
@@ -223,16 +224,21 @@ impl Clone for ClientHandle {
 
 pub struct Client {
     handle: ClientHandle,
-    ping_worker: Sender<()>,
+    ping_worker: Option<Sender<()>>,
 }
 
 impl Client {
-    pub fn new<A: ToSocketAddr, B: ToSocketAddr>(connect_to: A, listen_on: B) -> IoResult<Client> {
+    pub fn new<A: ToSocketAddr, B: ToSocketAddr>(connect_to: A, listen_on: B, ping: bool) -> IoResult<Client> {
         let connected_to = try!(connect_to.to_socket_addr());
         let sock = try!(UdpSocket::bind(listen_on));
         let conn = Arc::new(Mutex::new(Conn::new()));
-        let (tx, rx) = channel();
-        Client::ping_worker(&sock, &conn, connected_to, rx);
+        let tx = if ping {
+            let (tx, rx) = channel();
+            Client::ping_worker(&sock, &conn, connected_to, rx);
+            Some(tx)
+        } else {
+            None
+        };
         Ok(Client{
             handle: ClientHandle{
                 connected_to: connected_to,
@@ -244,13 +250,13 @@ impl Client {
         })
     }
 
-    pub fn handle(&mut self) -> &mut ClientHandle {
-        &mut self.handle
+    pub fn handle(&self) -> ClientHandle {
+        self.handle.clone()
     }
 
     fn ping_worker(sock: &UdpSocket, conn: &Arc<Mutex<Conn>>, addr: SocketAddr, close_signal: Receiver<()>) {
         let mut sock = sock.clone();
-        let conn = conn.clone();
+        let conn: Arc<Mutex<Conn>> = conn.clone();
         let _ = Thread::spawn(move || {
             loop {
                 let close = close_signal.try_recv().is_ok();
@@ -294,11 +300,18 @@ impl ClientHandle {
             }
         }
     }
+
+    pub fn set_timeout(&mut self, ms: Option<u64>) {
+        self.socket.set_timeout(ms)
+    }
 }
 
 impl Drop for Client {
     fn drop(&mut self) {
-        self.ping_worker.send(()).ok().unwrap();
+        match self.ping_worker {
+            None         => (),
+            Some(ref tx) => tx.send(()).ok().unwrap(),
+        }
     }
 }
 
@@ -439,11 +452,17 @@ fn test() {
     let server_addr = "127.0.0.1:10000".to_socket_addr().ok().unwrap();
     let client_addr = "127.0.0.1:10001".to_socket_addr().ok().unwrap();
     let mut server = Server::new(server_addr).ok().unwrap();
-    let mut client = Client::new(server_addr, client_addr).ok().unwrap();
+    let mut client = Client::new(server_addr, client_addr, false).ok().unwrap();
+    let mut client_handle = client.handle();
 
     let body: isize = 1234;
-    client.send(&body).ok().unwrap();
-    assert!(client.conn.local.seq == Seq(1));
+    client_handle.send(&body).ok().unwrap();
+    {
+        let conn = client_handle.conn.lock().unwrap();
+        assert!(conn.local.seq == Seq(1));
+        assert!(conn.local.ack == Seq(0));
+        assert!(conn.remote.ack == Seq(0));
+    }
 
     let (recv_addr, recv_body): (SocketAddr, isize) = server.recv().ok().unwrap();
     assert!(recv_body == body);
@@ -464,8 +483,11 @@ fn test() {
         assert!(server_client_conn.remote.ack == Seq(0));
     }
 
-    let recv_body: isize = client.recv().ok().unwrap();
+    let recv_body: isize = client_handle.recv().ok().unwrap();
     assert!(recv_body == body);
-    assert!(client.conn.local.seq == Seq(1));
-    assert!(client.conn.local.ack == Seq(1));
+    {
+        let conn = client_handle.conn.lock().unwrap();
+        assert!(conn.local.seq == Seq(1));
+        assert!(conn.local.ack == Seq(1));
+    }
 }

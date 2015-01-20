@@ -1,4 +1,4 @@
 #![allow(unstable)]
 extern crate dogfights;
 
-fn main() { dogfights::client() }
+fn main() { dogfights::run_local() }

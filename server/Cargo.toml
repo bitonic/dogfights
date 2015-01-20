@@ -1,0 +1,24 @@
+[package]
+name = "server"
+version = "0.0.1"
+authors = ["Francesco Mazzoli <f@mazzo.li>"]
+
+[lib]
+name = "server"
+path = "lib.rs"
+
+[dependencies]
+sdl2 = "^0"
+log = "^0"
+
+[dependencies.actors]
+path = "../actors"
+
+[dependencies.specs]
+path = "../specs"
+
+[dependencies.conf]
+path = "../conf"
+
+[dependencies.input]
+path = "../input"

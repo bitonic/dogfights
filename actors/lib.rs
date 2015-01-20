@@ -10,6 +10,7 @@ extern crate physics;
 use std::collections::HashMap;
 use std::collections::hash_map::{Keys, Values, Iter};
 use std::num::Float;
+use std::sync::Arc;
 use rustc_serialize::{Encodable, Encoder, Decodable, Decoder};
 
 use geometry::*;
@@ -336,8 +337,8 @@ impl Actors {
         actor_id
     }
 
-    pub fn remove(&mut self, actor_id: ActorId) {
-        let _ = self.actors.remove(&actor_id).unwrap();
+    pub fn remove(&mut self, actor_id: ActorId) -> Option<Actor> {
+        self.actors.remove(&actor_id)
     }
 
     pub fn insert(&mut self, actor_id: ActorId, actor: Actor) {
@@ -366,15 +367,15 @@ impl Actors {
 }
 
 #[derive(PartialEq, Clone, Copy, Show)]
-pub struct ShipInput {
-    pub ship: ActorId,
+pub struct PlayerInput {
+    pub player: ActorId,
     pub input: Input,
 }
 
-impl ShipInput {
-    pub fn lookup(inputs: &Vec<ShipInput>, actor_id: ActorId) -> Option<Input> {
+impl PlayerInput {
+    pub fn lookup(inputs: &Vec<PlayerInput>, actor_id: ActorId) -> Option<Input> {
         for input in inputs.iter() {
-            if input.ship == actor_id { return Some(input.input) }
+            if input.player == actor_id { return Some(input.input) }
         };
         None
     }
@@ -387,11 +388,15 @@ pub struct Game {
 }
 
 impl Game {
-    pub fn advance(&self, spec: &GameSpec, inputs: &Vec<ShipInput>, dt: f32) -> Game {
+    pub fn new() -> Game {
+        Game{actors: Actors::new(), time: 0.}
+    }
+
+    pub fn advance(&self, spec: &GameSpec, inputs: &Vec<PlayerInput>, dt: f32) -> Game {
         // First move everything, spawn new stuff
         let mut advanced_actors = Actors::prepare_new(&self.actors);
         for (actor_id, actor) in self.actors.iter() {
-            let actor_input = ShipInput::lookup(inputs, *actor_id);
+            let actor_input = PlayerInput::lookup(inputs, *actor_id);
             match actor.advance(spec, &mut advanced_actors, actor_input, dt) {
                 None                 => {},
                 Some(advanced_actor) => { advanced_actors.insert(*actor_id, advanced_actor) },
@@ -417,5 +422,26 @@ impl Game {
     pub fn add_ship(&mut self, spec: &GameSpec) -> ActorId {
         let ship_pos = Vec2 {x: SCREEN_WIDTH/2., y: SCREEN_HEIGHT/2.};
         self.actors.add(Actor::Ship(Ship::new(spec.ship_spec, ship_pos)))
+    }
+}
+
+#[derive(Clone, RustcEncodable, RustcDecodable)]
+pub struct PlayerGame {
+    pub player: ActorId,
+    pub game: Arc<Game>,
+}
+
+impl PlayerGame {
+    pub fn advance(&self, spec: &GameSpec, input: Input, dt: f32) -> PlayerGame {
+        let inputs: Vec<PlayerInput> = vec![
+            PlayerInput{
+                player: self.player,
+                input: input,
+            }];
+        let game = Arc::new(self.game.advance(spec, &inputs, dt));
+        PlayerGame{
+            game: game,
+            player: self.player
+        }
     }
 }

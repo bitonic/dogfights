@@ -29,5 +29,5 @@ fn main() {
         },
     };
     let display = matches.opt_present("x");
-    dogfights::server(&("127.0.0.1", port), display);
+    dogfights::run_server(("127.0.0.1", port));
 }

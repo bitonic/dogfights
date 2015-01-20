@@ -21,12 +21,12 @@ name = "dogfights-remote"
 path = "dogfights/dogfights-remote.rs"
 
 [dependencies]
-rustc-serialize = "0.2.7"
+rustc-serialize = "0.2.8"
 log = "^0"
-sdl2 = "0.0.16"
+sdl2 = "0.0.18"
 
 [dependencies.sdl2_image]
-git = "https://github.com/xsleonard/rust-sdl2_image"
+git = "https://github.com/bitonic/rust-sdl2_image"
 
 [dependencies.bincode]
 path = "./bincode"
@@ -56,4 +56,7 @@ path = "./render"
 path = "./render"
 
 [dependencies.interpolate]
+path = "./interpolate"
+
+[dependencies.server]
 path = "./interpolate"

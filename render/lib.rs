@@ -9,6 +9,7 @@ extern crate conf;
 use sdl2::SdlResult;
 use sdl2::render::Renderer;
 use sdl2::pixels::Color;
+use std::ops::Deref;
 
 use geometry::*;
 use specs::*;
@@ -157,10 +158,14 @@ impl RenderEnv {
         Ok(())
     }
 
-    pub fn game(&self, game: &Game, spec: &GameSpec, trans: &Transform) -> SdlResult<()> {
+    pub fn game(&self, game: &Game, spec: &GameSpec, player: ActorId) -> SdlResult<()> {
+        let trans = &game.actors.get(player).unwrap().is_ship().camera.transform();
         try!(self.map(&spec.map, &trans.pos));
         try!(self.actors(&game.actors, spec, trans));
         Ok(())
     }
-}
 
+    pub fn player_game(&self, game: &PlayerGame, spec: &GameSpec) -> SdlResult<()> {
+        self.game(game.game.deref(), spec, game.player)
+    }
+}
