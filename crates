@@ -1,0 +1,12 @@
+#!/bin/bash
+
+"$@"
+
+for dir in *; do
+    if [ -d $dir ] && [ $dir != "dogfights" ]; then
+        cd $dir
+        echo "### $dir"
+        "$@"
+        cd ..
+    fi
+done
