@@ -115,9 +115,9 @@ impl Conn {
 }
 
 fn encode_and_send<T: Encodable>(conn: &mut Conn, sock: &mut UdpSocket, buf: &mut [u8], addr: SocketAddr, msg_type: MsgType, body: &T) -> IoResult<()> {
-    debug!("encode_and_send: sending message to {}", addr);
     let now = sdl2::get_ticks();
     if now - conn.remote.received > CONN_TIMEOUT {
+        debug!("Connection {} timed out", addr);
         return Err(IoError{
             kind: IoErrorKind::Closed,
             desc: "network::encode_and_send: Connection timed out",
@@ -131,7 +131,6 @@ fn encode_and_send<T: Encodable>(conn: &mut Conn, sock: &mut UdpSocket, buf: &mu
         body: &'a T,
     }
 
-    // println!("Bumping local seq");
     conn.local.seq.bump();
     let packet = Packet{
         header: Header::new(conn.local, msg_type),
@@ -142,8 +141,8 @@ fn encode_and_send<T: Encodable>(conn: &mut Conn, sock: &mut UdpSocket, buf: &mu
         try!(bincode::encode_into(&packet, &mut w));
         (try!(w.tell()) as usize)
     };
-    // TODO check for errors
     try!(sock.send_to(buf.slice_to(len), addr));
+    debug!("Message sent to {}", addr);
     Ok(())
 }
 
@@ -158,9 +157,9 @@ fn send_pong(conn: &mut Conn, sock: &mut UdpSocket, addr: SocketAddr) -> IoResul
 }
 
 fn recv_and_decode_1(sock: &mut UdpSocket, buf: &mut [u8]) -> IoResult<SocketAddr> {
-    debug!("recv_and_decode: blocking to receive");
+    debug!("Blocking to receive");
     let (_, addr) = try!(sock.recv_from(buf));
-    debug!("recv_and_decode: received message from {}", addr);
+    debug!("Received message from {}", addr);
     Ok(addr)
 }
 
@@ -172,17 +171,16 @@ fn recv_and_decode_2<T: Decodable>(conn: &mut Conn, addr: SocketAddr, sock: &mut
     }
 
     let mut r = BufReader::new(buf);
-    // TODO handle "good" io errors
     let packet: bincode::DecodingResult<Packet<T>> = bincode::decode_from(&mut r);
     match packet {
         Err(err) => {
-            debug!("Error while decoding: {}, dropping", err);
+            warn!("Error while decoding: {}, dropping", err);
             Ok(None)
         },
         Ok(packet) => {
             let proto_id = packet.header.proto_id;
             if proto_id != PROTO_ID {
-                debug!("Mismatching proto-id, got {}, expecting {}", packet.header.proto_id, PROTO_ID);
+                warn!("Mismatching proto-id, got {}, expecting {}", packet.header.proto_id, PROTO_ID);
                 Ok(None)
             } else {
                 conn.tickle(&packet.header.local);
@@ -270,7 +268,7 @@ impl Client {
                     let mut conn = conn.lock().unwrap();
                     match send_ping(conn.deref_mut(), &mut sock, addr) {
                         Ok(()) => (),
-                        Err(err) => debug!("network::Client::ping_worker: got error {}", err),
+                        Err(err) => warn!("network::Client::ping_worker: got error {}", err),
                     };
                 }
                 sdl2::timer::delay(PING_INTERVAL as usize);
@@ -296,7 +294,7 @@ impl ClientHandle {
                     Some(body) => return Ok(body)
                 }
             } else {
-                debug!("Got message from unknown sender {}, expected {}", addr, self.connected_to);
+                warn!("Got message from unknown sender {}, expected {}", addr, self.connected_to);
             }
         }
     }
@@ -349,7 +347,10 @@ impl Server {
                 match encode_and_send(entry.get_mut(), &mut self.socket, &mut buf, addr, MsgType::Normal, body) {
                     Err(err) => {
                         match err.kind {
-                            IoErrorKind::Closed => { let _ = entry.remove(); },
+                            IoErrorKind::Closed => {
+                                debug!("Removing connection to {}", addr);
+                                let _ = entry.remove();
+                            },
                             _ => (),
                         };
                         Err(err)
@@ -427,18 +428,6 @@ pub fn is_timeout<T>(err: &IoResult<T>) -> bool {
         }
     }
 }
-
-// #[inline]
-// pub fn handle_recv_result<T>(err: IoResult<T>) -> Option<T> {
-//     match err {
-//         Ok(x) => Some(x),
-//         Err(err) => {
-//             // TODO better reporting on what's good or bad
-//             debug!("network::handle_recv_result: got error {}", err);
-//             None
-//         },
-//     }
-// }
 
 // ---------------------------------------------------------------------
 // Multiple seqs

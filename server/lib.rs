@@ -48,10 +48,12 @@ impl ServerHandle {
             clients.insert(player, tx);
             rx
         };
+        info!("Player {} joined.", player);
         (player, rx)
     }
 
     pub fn send(&self, player: ActorId, cmd: Input) -> Result<(), SendError<(ActorId, Input)>> {
+        debug!("Player {} about to send input", player);
         let res = self.cmds.send((player, cmd));
         if res.is_err() {
             {
@@ -62,13 +64,10 @@ impl ServerHandle {
                 let mut games = self.games.lock().unwrap();
                 let _ = games.front_mut().unwrap().actors.remove(player);
             }
+            info!("Player {} left the game -- disconnected when sending", player);
         };
         res
     }
-
-    // pub fn game(&self) -> Arc<Mutex<Game>> {
-    //     self.games.clone()
-    // }
 }
 
 impl Server {
@@ -104,7 +103,8 @@ impl Server {
             let mut games = self.games.lock().unwrap();
             let mut game = games.front_mut().unwrap();
             let _ = game.actors.remove(player);
-        }
+        };
+        info!("Player {} left the game -- disconnected when sending", player);
     }
     
     fn broadcast(&self, game: Arc<Game>) {
@@ -117,7 +117,9 @@ impl Server {
                 let mb_err = tx.send(game.clone());
                 if mb_err.is_err() {
                     dead.push(*actor_id);
-                };
+                } else {
+                    debug!("Game sent to {}", actor_id);
+                }
             };
             // Unlock clients
         }
@@ -131,6 +133,7 @@ impl Server {
         loop {
             match self.cmds_rx.try_recv() {
                 Ok((player, x)) => {
+                    debug!("Got input from player {}", player);
                     cmds.push(PlayerInput{
                         player: player,
                         input: x,

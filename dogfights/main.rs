@@ -22,6 +22,7 @@ use std::slice::SliceExt;
 use std::sync::mpsc::{channel, TryRecvError};
 use std::thread::Thread;
 use std::ops::Deref;
+use std::sync::{Arc, Mutex};
 
 use actors::*;
 use input::*;
@@ -109,7 +110,8 @@ pub fn run_server<A: ToSocketAddr>(addr: A) {
     let server = Server::new(spec.clone(), Game::new());
     let server_handle = server.handle();
 
-    let mut clients: HashMap<SocketAddr, ActorId> = HashMap::new();
+    let clients: Arc<Mutex<HashMap<SocketAddr, ActorId>>> = Arc::new(Mutex::new(HashMap::new()));
+    let worker_clients = clients.clone();
 
     // Thread running the server
     let _ = Thread::spawn(move || { server.run(); });
@@ -118,30 +120,36 @@ pub fn run_server<A: ToSocketAddr>(addr: A) {
         if should_quit() { break };
 
         let (addr, input): (SocketAddr, Input) = net.recv().ok().unwrap();
-        let player = match clients.entry(addr) {
-            Entry::Occupied(entry) => *entry.get(),
-            Entry::Vacant(entry) => {
-                let (player, rx) = server_handle.join();
-                let _ = entry.insert(player);
-                let mut worker_net = net.clone();
-                let _ = Thread::spawn(move || {
-                    loop {
-                        match rx.recv() {
-                            Ok(game) => {
-                                let send_res = worker_net.send(addr, &PlayerGame{player: player, game: game});
-                                if network::is_disconnect(&send_res) { break };
-                                send_res.ok().unwrap();
-                            }
-                            Err(_) => break
+        let player = {
+            match clients.lock().unwrap().entry(addr) {
+                Entry::Occupied(entry) => {
+                    *entry.get()
+                },
+                Entry::Vacant(entry) => {
+                    let (player, rx) = server_handle.join();
+                    info!("New player {} for connection {}", player, addr);
+                    let _ = entry.insert(player);
+                    let mut worker_net = net.clone();
+                    let clients = worker_clients.clone();
+                    let _ = Thread::spawn(move || {
+                        loop {
+                            // It it was error, it'd mean that the server
+                            // has removed the player, for some reason
+                            let game = rx.recv().ok().unwrap();
+                            let send_res = worker_net.send(addr, &PlayerGame{player: player, game: game});
+                            if network::is_disconnect(&send_res) {
+                                let _ = clients.lock().unwrap().remove(&addr);
+                                break
+                            };
+                            send_res.ok().unwrap();
                         }
-                    }
-                });
-                player
+                    });
+                    player
+                }
             }
         };
-        if server_handle.send(player, input).is_err() {
-            let _ = clients.remove(&addr);
-        };
+        // This would mean that the server has died
+        server_handle.send(player, input).ok().unwrap();
     }
 }
 
