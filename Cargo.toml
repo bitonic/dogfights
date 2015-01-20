@@ -34,14 +34,8 @@ path = "./bincode"
 [dependencies.network]
 path = "./network"
 
-[dependencies.geometry]
-path = "./geometry"
-
 [dependencies.physics]
 path = "./physics"
-
-[dependencies.conf]
-path = "./conf"
 
 [dependencies.actors]
 path = "./actors"
@@ -55,8 +49,12 @@ path = "./render"
 [dependencies.specs]
 path = "./render"
 
-[dependencies.interpolate]
-path = "./interpolate"
-
 [dependencies.server]
-path = "./interpolate"
+path = "./server"
+
+[dependencies.geometry]
+path = "./geometry"
+
+[dependencies.conf]
+path = "./conf"
+

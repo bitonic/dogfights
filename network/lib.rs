@@ -407,16 +407,38 @@ impl Server {
 // Utilities
 
 #[inline]
-pub fn handle_recv_result<T>(err: IoResult<T>) -> Option<T> {
-    match err {
-        Ok(x) => Some(x),
-        Err(err) => {
-            // TODO better reporting on what's good or bad
-            debug!("network::handle_recv_result: got error {}", err);
-            None
+pub fn is_disconnect<T>(err: &IoResult<T>) -> bool {
+    match *err {
+        Ok(_) => false,
+        Err(ref err) => match err.kind {
+            IoErrorKind::Closed => true,
+            _ => false,
         },
     }
 }
+
+#[inline]
+pub fn is_timeout<T>(err: &IoResult<T>) -> bool {
+    match *err {
+        Ok(_) => false,
+        Err(ref err) => match err.kind {
+            IoErrorKind::TimedOut => true,
+            _ => false,
+        }
+    }
+}
+
+// #[inline]
+// pub fn handle_recv_result<T>(err: IoResult<T>) -> Option<T> {
+//     match err {
+//         Ok(x) => Some(x),
+//         Err(err) => {
+//             // TODO better reporting on what's good or bad
+//             debug!("network::handle_recv_result: got error {}", err);
+//             None
+//         },
+//     }
+// }
 
 // ---------------------------------------------------------------------
 // Multiple seqs
