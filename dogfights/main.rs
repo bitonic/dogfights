@@ -175,6 +175,7 @@ pub fn run_remote<A: ToSocketAddr, B: ToSocketAddr>(server_addr: A, bind: B) {
             rotating: Rotating::Still,
             paused: false,
         };
+        let mut first = true;
 
         loop {
             let new_input = input.process_events();
@@ -182,7 +183,8 @@ pub fn run_remote<A: ToSocketAddr, B: ToSocketAddr>(server_addr: A, bind: B) {
                 let _ = quit_tx.send(());
                 break
             }
-            if new_input != input {
+            if first || new_input != input {
+                first = false;
                 input = new_input;
                 let send_res = client_sender.send(&input);
                 if network::is_disconnect(&send_res) { break; };
