@@ -20,6 +20,10 @@ path = "dogfights/dogfights-server.rs"
 name = "dogfights-remote"
 path = "dogfights/dogfights-remote.rs"
 
+[[bin]]
+name = "dogfights-remote-ai"
+path = "dogfights/dogfights-remote-ai.rs"
+
 [dependencies]
 rustc-serialize = "0.2.8"
 log = "^0"
@@ -27,6 +31,9 @@ sdl2 = "0.0.18"
 
 [dependencies.sdl2_image]
 git = "https://github.com/bitonic/rust-sdl2_image"
+
+[dependencies.scan_mac]
+git = "https://github.com/mahkoh/scan"
 
 [dependencies.bincode]
 path = "./bincode"
@@ -57,4 +64,7 @@ path = "./geometry"
 
 [dependencies.conf]
 path = "./conf"
+
+[dependencies.ai]
+path = "./ai"
 

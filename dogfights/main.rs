@@ -14,6 +14,7 @@ extern crate geometry;
 extern crate conf;
 extern crate specs;
 extern crate network;
+extern crate ai;
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -38,14 +39,14 @@ pub fn run_local(ais: Vec<String>) {
     let render = RenderEnv{renderer: renderer, textures: textures};
     let spec = Arc::new(init_spec());
     let server = Server::new(spec.clone(), Game::new());
-    let (_, mut client_send, mut client_recv) = server.join_handle().join();
+    let (player, mut client_send, mut client_recv) = server.join_handle().join();
 
-    // // Add ais
-    // for ai in ais.iter() {
-    //     match ai {
-    //         "follower" =>
-    //     }
-    // }
+    // Add ais
+    for ai_s in ais.iter() {
+        let ai = ai::parse_ai_string(&**ai_s, Some(player));
+        let (_, mut ai_send, mut ai_recv) = server.join_handle().join();
+        let _ = Thread::spawn(move || { attach_ai(&mut ai_send, &mut ai_recv, ai.deref(), |_| {}) });
+    }
 
     // Thread running the server
     let _ = Thread::spawn(move || { server.run(); });
@@ -137,5 +138,35 @@ pub fn run_remote<A: ToSocketAddr, B: ToSocketAddr>(server_addr: A, bind: B) {
     attach_sdl(&mut client_handle_send, &mut client_handle_recv, |game| {
         render.player_game(&game, spec.deref()).ok().unwrap();
         render.renderer.present();
+    });
+}
+
+pub fn run_remote_ai<A: ToSocketAddr, B: ToSocketAddr>(server_addr: A, bind: B, ai_s: &str, display: bool) {
+    let client = network::Client::new(server_addr, bind, true).ok().unwrap();
+    let mut client_handle_send = client.handle();
+    let mut client_handle_recv = client.handle();
+
+    let ai = ai::parse_ai_string(ai_s, None);
+
+    let mb_render: Option<RenderEnv> = if display {
+        let renderer = init_sdl(false);
+        let textures = init_textures(&renderer);
+        let render = RenderEnv{renderer: renderer, textures: textures};
+        Some(render)
+    } else {
+        init_headless_sdl();
+        None
+    };
+
+    let spec = init_spec();
+
+    attach_ai(&mut client_handle_send, &mut client_handle_recv, ai.deref(), |player_game| {
+        match mb_render {
+            None => (),
+            Some(ref render) => {
+                render.player_game(&player_game, &spec).ok().unwrap();
+                render.renderer.present();
+            }
+        }
     });
 }

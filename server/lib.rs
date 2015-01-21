@@ -37,12 +37,14 @@ pub trait ClientRecv {
     fn recv_game(&mut self) -> Option<PlayerGame>;
 }
 
-pub fn attach_ai<A: Ai, S: ClientSend, R: ClientRecv>(send: &mut S, recv: &mut R, ai: &Ai) {
+pub fn attach_ai<A: Ai + ?Sized, S: ClientSend, R: ClientRecv, F: Fn(PlayerGame)>(send: &mut S, recv: &mut R, ai: &A, on_game_update: F) {
     loop {
+        let _ = send.send_input(Input::new());
         match recv.recv_game() {
             None => break,
             Some(player_game) => {
                 let input = ai.move_(&player_game);
+                on_game_update(player_game);
                 if !send.send_input(input) { break };
             }
         }
@@ -57,7 +59,7 @@ pub fn attach_sdl<S: ClientSend + Send + Clone, R: ClientRecv, F: Fn(PlayerGame)
     let _ = Thread::spawn(move || {
         // Send input every 5ms
         let mut input = Input::new();
-
+        let _ = worker_send.send_input(input);
         loop {
             let new_input = input.process_events();
             if new_input.quit {
