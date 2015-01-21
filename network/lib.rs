@@ -405,31 +405,6 @@ impl Server {
 }
 
 // ---------------------------------------------------------------------
-// Utilities
-
-#[inline]
-pub fn is_disconnect<T>(err: &IoResult<T>) -> bool {
-    match *err {
-        Ok(_) => false,
-        Err(ref err) => match err.kind {
-            IoErrorKind::Closed => true,
-            _ => false,
-        },
-    }
-}
-
-#[inline]
-pub fn is_timeout<T>(err: &IoResult<T>) -> bool {
-    match *err {
-        Ok(_) => false,
-        Err(ref err) => match err.kind {
-            IoErrorKind::TimedOut => true,
-            _ => false,
-        }
-    }
-}
-
-// ---------------------------------------------------------------------
 // Multiple seqs
 
 // #[derive(PartialEq, Clone, Copy, Show, RustcDecodable, RustcEncodable)]

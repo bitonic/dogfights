@@ -21,6 +21,16 @@ pub struct Input {
 }
 
 impl Input {
+    pub fn new() -> Input {
+        Input{
+            quit: false,
+            accel: false,
+            firing: false,
+            rotating: Rotating::Still,
+            paused: false,
+        }
+    }
+
     pub fn process_events(self) -> Input {
         let mut input = self;
         loop {

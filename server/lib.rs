@@ -1,3 +1,4 @@
+#![allow(unstable)]
 extern crate sdl2;
 #[macro_use] extern crate log;
 
@@ -5,73 +6,104 @@ extern crate actors;
 extern crate specs;
 extern crate conf;
 extern crate input;
+extern crate ai;
+extern crate network;
 
-use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError, SendError};
+use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::cmp::min;
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use std::collections::RingBuf;
+use std::thread::Thread;
+use std::ops::Deref;
+use std::io::IoErrorKind;
 
 use actors::*;
 use specs::*;
 use conf::*;
 use input::*;
+use ai::*;
+
+// ---------------------------------------------------------------------
+// Generic client handle and utilities
+
+pub trait ClientSend {
+    /// `false` if we should stop.
+    fn send_input(&mut self, input: Input) -> bool;
+}
+
+pub trait ClientRecv {
+    /// `None` if we should stop.
+    fn recv_game(&mut self) -> Option<PlayerGame>;
+}
+
+pub fn attach_ai<A: Ai, S: ClientSend, R: ClientRecv>(send: &mut S, recv: &mut R, ai: &Ai) {
+    loop {
+        match recv.recv_game() {
+            None => break,
+            Some(player_game) => {
+                let input = ai.move_(&player_game);
+                if !send.send_input(input) { break };
+            }
+        }
+    }
+}
+
+pub fn attach_sdl<S: ClientSend + Send + Clone, R: ClientRecv, F: Fn(PlayerGame)>(send: &S, recv: &mut R, on_game_update: F) {
+    let (quit_tx, quit_rx) = channel();
+    let mut worker_send = send.clone();
+
+    // Thread sending inputs
+    let _ = Thread::spawn(move || {
+        // Send input every 5ms
+        let mut input = Input::new();
+
+        loop {
+            let new_input = input.process_events();
+            if new_input.quit {
+                let _ = quit_tx.send(());
+                break
+            }
+            if new_input != input {
+                input = new_input;
+                let alive = worker_send.send_input(input);
+                if !alive { break };
+            }
+            sdl2::timer::delay(5);
+        }
+    });
+
+    // Get the game and draw
+    loop {
+        let quit = quit_rx.try_recv();
+        match quit {
+            Ok(()) => break,
+            Err(TryRecvError::Empty) => (),
+            Err(TryRecvError::Disconnected) => break,
+        }
+
+        match recv.recv_game() {
+            None => break,
+            Some(game) => on_game_update(game),
+        };
+    };
+}
+
+// ---------------------------------------------------------------------
+// Server
 
 const SERVER_GAMES: usize = 32;
 
 pub struct Server {
-    pub spec: GameSpec,
-    pub games: Arc<Mutex<RingBuf<Game>>>,
-    pub clients: Arc<Mutex<HashMap<ActorId, Sender<Arc<Game>>>>>,
-    pub cmds_tx: Sender<(ActorId, Input)>,
-    pub cmds_rx: Receiver<(ActorId, Input)>,
-}
-
-#[derive(Clone)]
-pub struct ServerHandle {
-    pub spec: GameSpec,
-    // Invariant: the `RingBuf` is not empty
-    pub games: Arc<Mutex<RingBuf<Game>>>,
-    pub cmds: Sender<(ActorId, Input)>,
-    pub clients: Arc<Mutex<HashMap<ActorId, Sender<Arc<Game>>>>>,
-}
-
-impl ServerHandle {
-    pub fn join(&self) -> (ActorId, Receiver<Arc<Game>>) {
-        let player = {
-            let mut games = self.games.lock().unwrap();
-            games.front_mut().unwrap().add_ship(&self.spec)
-        };
-        let rx = {
-            let mut clients = self.clients.lock().unwrap();
-            let (tx, rx) = channel();
-            clients.insert(player, tx);
-            rx
-        };
-        info!("Player {} joined.", player);
-        (player, rx)
-    }
-
-    pub fn send(&self, player: ActorId, cmd: Input) -> Result<(), SendError<(ActorId, Input)>> {
-        debug!("Player {} about to send input", player);
-        let res = self.cmds.send((player, cmd));
-        if res.is_err() {
-            {
-                let mut clients = self.clients.lock().unwrap();
-                let _ = clients.remove(&player);
-            };
-            {
-                let mut games = self.games.lock().unwrap();
-                let _ = games.front_mut().unwrap().actors.remove(player);
-            }
-            info!("Player {} left the game -- disconnected when sending", player);
-        };
-        res
-    }
+    spec: Arc<GameSpec>,
+    games: Arc<Mutex<RingBuf<Game>>>,
+    clients: Arc<Mutex<HashMap<ActorId, Sender<Arc<Game>>>>>,
+    cmds_tx: Sender<(ActorId, Input)>,
+    cmds_rx: Receiver<(ActorId, Input)>,
 }
 
 impl Server {
-    pub fn new(spec: GameSpec, game: Game) -> Server {
+    pub fn new(spec: Arc<GameSpec>, game: Game) -> Server {
         let (cmds_tx, cmds_rx) = channel();
         let mut games = RingBuf::with_capacity(SERVER_GAMES);
         games.push_front(game);
@@ -84,12 +116,12 @@ impl Server {
         }
     }
 
-    pub fn handle(&self) -> ServerHandle {
-        ServerHandle{
+    pub fn join_handle(&self) -> JoinHandle {
+        JoinHandle{
             spec: self.spec.clone(),
             games: self.games.clone(),
             clients: self.clients.clone(),
-            cmds: self.cmds_tx.clone(),
+            cmds_tx: self.cmds_tx.clone(),
         }
     }
 
@@ -156,7 +188,7 @@ impl Server {
                 Some(inputs) => {
                     let game = {
                         let mut games = self.games.lock().unwrap();
-                        let new_game = games.front().unwrap().advance(&self.spec, &inputs, TIME_STEP);
+                        let new_game = games.front().unwrap().advance(self.spec.deref(), &inputs, TIME_STEP);
                         if games.len() >= SERVER_GAMES {
                             games.pop_back().unwrap();
                         };
@@ -167,6 +199,104 @@ impl Server {
                     let time_end = sdl2::get_ticks() as usize;
                     sdl2::timer::delay(wait_ms - min(wait_ms, time_end - time_begin));
                 },
+            }
+        }
+    }
+}
+
+// We need this to have a clonable joiner
+#[derive(Clone)]
+pub struct JoinHandle {
+    spec: Arc<GameSpec>,
+    games: Arc<Mutex<RingBuf<Game>>>,
+    clients: Arc<Mutex<HashMap<ActorId, Sender<Arc<Game>>>>>,
+    cmds_tx: Sender<(ActorId, Input)>,
+}
+
+impl JoinHandle {
+    pub fn join(&self) -> (ActorId, ServerClientSend, ServerClientRecv) {
+        let player = {
+            let mut games = self.games.lock().unwrap();
+            games.front_mut().unwrap().add_ship(self.spec.deref())
+        };
+        let rx = {
+            let mut clients = self.clients.lock().unwrap();
+            let (tx, rx) = channel();
+            clients.insert(player, tx);
+            rx
+        };
+        info!("Player {} joined.", player);
+        (player,
+         ServerClientSend{player: player, sender: self.cmds_tx.clone()},
+         ServerClientRecv{player: player, receiver: rx})
+    }
+}
+
+// ---------------------------------------------------------------------
+// ServerClient
+
+#[derive(Clone)]
+pub struct ServerClientSend {
+    player: ActorId,
+    sender: Sender<(ActorId, Input)>,
+}
+
+impl ClientSend for ServerClientSend {
+    fn send_input(&mut self, input: Input) -> bool {
+        let send_res = self.sender.send((self.player, input));
+        if send_res.is_err() { return false };
+        true
+    }
+}
+
+pub struct ServerClientRecv {
+    player: ActorId,
+    receiver: Receiver<Arc<Game>>,
+}
+
+impl ClientRecv for ServerClientRecv {
+    fn recv_game(&mut self) -> Option<PlayerGame> {
+        let recv_res = self.receiver.recv();
+        match recv_res {
+            Err(_) => None,
+            Ok(game) => Some(PlayerGame{
+                player: self.player,
+                game: game
+            }),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
+// Network `ClientHandle`
+
+impl ClientSend for network::ClientHandle {
+    fn send_input(&mut self, input: Input) -> bool {
+        loop {
+            let send_res = self.send(&input);
+            match send_res {
+                Err(err) => match err.kind {
+                    IoErrorKind::Closed => return false,
+                    _ => warn!("Got unexpected error {}, continuing", err),
+                },
+                Ok(()) => return true,
+            }
+        }
+    }
+}
+
+impl ClientRecv for network::ClientHandle {
+    fn recv_game(&mut self) -> Option<PlayerGame> {
+        loop {
+            self.set_timeout(Some(5));
+            let recv_res = self.recv();
+            match recv_res {
+                Err(err) => match err.kind {
+                    IoErrorKind::Closed => return None,
+                    IoErrorKind::TimedOut => (),
+                    _ => warn!("Got unexpected error {}, continuing", err),
+                },
+                Ok(game) => return Some(game),
             }
         }
     }

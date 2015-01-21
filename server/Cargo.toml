@@ -22,3 +22,9 @@ path = "../conf"
 
 [dependencies.input]
 path = "../input"
+
+[dependencies.ai]
+path = "../ai"
+
+[dependencies.network]
+path = "../network"
