@@ -1,9 +1,9 @@
 extern crate sdl2;
+extern crate "rustc-serialize" as rustc_serialize;
 
 extern crate geometry;
 
 use std::collections::HashMap;
-use sdl2::pixels::Color;
 use sdl2::render::Texture;
 
 use geometry::*;
@@ -17,7 +17,7 @@ pub type Textures = HashMap<TextureId, Texture>;
 // ---------------------------------------------------------------------
 // Sprites
 
-#[derive(PartialEq, Clone, Copy)]
+#[derive(PartialEq, Clone, Copy, RustcEncodable, RustcDecodable)]
 pub struct Sprite {
     pub texture: TextureId,
     pub rect: Rect,
@@ -27,13 +27,25 @@ pub struct Sprite {
 }
 
 // ---------------------------------------------------------------------
+// Color (we don't use the SDL2 one because we can't encode/decode it)
+
+#[derive(PartialEq, Clone, Copy, RustcEncodable, RustcDecodable)]
+pub struct Color(pub u8, pub u8, pub u8);
+
+impl Color {
+    pub fn to_sdl_color(self) -> sdl2::pixels::Color {
+        sdl2::pixels::Color::RGB(self.0, self.1, self.2)
+    }
+}
+
+// ---------------------------------------------------------------------
 // Map
 
-#[derive(PartialEq, Clone, Copy)]
+#[derive(PartialEq, Clone, Copy, RustcEncodable, RustcDecodable)]
 pub struct Map {
     pub w: f32,
     pub h: f32,
-    pub background_color: Color, 
+    pub background_color: Color,
     pub background_texture: TextureId,
 }
 
@@ -69,7 +81,7 @@ impl Map {
 // ---------------------------------------------------------------------
 // BBox
 
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, RustcEncodable, RustcDecodable)]
 pub struct BBox {
     pub rects: Vec<Rect>,
 }
@@ -93,7 +105,7 @@ impl BBox {
 
 pub type SpecId = u32;
 
-#[derive(PartialEq, Clone, Show, Copy)]
+#[derive(PartialEq, Clone, Show, Copy, RustcEncodable, RustcDecodable)]
 pub struct CameraSpec {
     pub accel: f32,
     // The minimum distance from the top/bottom edges to the ship
@@ -102,7 +114,7 @@ pub struct CameraSpec {
     pub h_pad: f32,
 }
 
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, RustcEncodable, RustcDecodable)]
 pub struct ShipSpec {
     pub rotation_vel: f32,
     pub rotation_vel_accel: f32,
@@ -117,7 +129,7 @@ pub struct ShipSpec {
     pub bbox: BBox,
 }
 
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, RustcEncodable, RustcDecodable)]
 pub struct BulletSpec {
     pub sprite: Sprite,
     pub vel: f32,
@@ -125,7 +137,7 @@ pub struct BulletSpec {
     pub bbox: BBox,
 }
 
-#[derive(PartialEq, Clone, Copy)]
+#[derive(PartialEq, Clone, Copy, RustcEncodable, RustcDecodable)]
 pub struct ShooterSpec {
     pub sprite: Sprite,
     pub trans: Transform,
@@ -133,7 +145,7 @@ pub struct ShooterSpec {
     pub firing_rate: f32,
 }
 
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, RustcEncodable, RustcDecodable)]
 pub enum Spec {
     ShipSpec(ShipSpec),
     ShooterSpec(ShooterSpec),
@@ -163,7 +175,7 @@ impl Spec {
     }
 }
 
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, RustcEncodable, RustcDecodable)]
 pub struct GameSpec {
     pub map: Map,
     pub camera_spec: CameraSpec,

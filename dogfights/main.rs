@@ -68,7 +68,6 @@ fn should_quit() -> bool {
     false
 }
 
-
 pub fn run_server<A: ToSocketAddr>(addr: A) {
     let mut net = network::Server::new(addr).ok().unwrap();
     init_headless_sdl();

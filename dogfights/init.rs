@@ -1,12 +1,11 @@
 extern crate sdl2;
 extern crate sdl2_image;
 
-use sdl2::pixels::Color;
 use sdl2::render::Renderer;
 use std::collections::HashMap;
 
-use geometry::*;
 use conf::*;
+use geometry::*;
 use specs::*;
 
 const PLANES_TEXTURE_ID: TextureId = 0;
@@ -35,7 +34,7 @@ pub fn init_textures(renderer: &Renderer) -> Textures {
 
     let planes_surface: sdl2::surface::Surface =
         sdl2_image::LoadSurface::from_file(&("assets/planes.png".parse()).unwrap()).ok().unwrap();
-    planes_surface.set_color_key(true, Color::RGB(0xba, 0xfe, 0xca)).ok().unwrap();
+    planes_surface.set_color_key(true, sdl2::pixels::Color::RGB(0xba, 0xfe, 0xca)).ok().unwrap();
     let planes_texture = renderer.create_texture_from_surface(&planes_surface).ok().unwrap();
     let _ = textures.insert(PLANES_TEXTURE_ID, planes_texture);
 
@@ -49,8 +48,8 @@ pub fn init_textures(renderer: &Renderer) -> Textures {
 pub fn init_spec() -> GameSpec {
     // Specs
     let mut specs = Vec::new();
-    let bullet_spec = BulletSpec {
-        sprite: Sprite {
+    let bullet_spec = BulletSpec{
+        sprite: Sprite{
             texture: PLANES_TEXTURE_ID,
             rect: Rect{pos: Vec2{x: 424., y: 140.}, w: 3., h: 12.},
             center: Vec2{x: 1., y: 6.},
@@ -58,7 +57,7 @@ pub fn init_spec() -> GameSpec {
         },
         vel: 1000.,
         lifetime: 5000.,
-        bbox: BBox {
+        bbox: BBox{
             rects: vec![
                 Rect{
                     pos: Vec2{y: -1.5, x: -6.},
@@ -69,11 +68,11 @@ pub fn init_spec() -> GameSpec {
     };
     let bullet_spec_id = 0;
     specs.push(Spec::BulletSpec(bullet_spec));
-    let ship_spec = ShipSpec {
+    let ship_spec = ShipSpec{
         rotation_vel: 10.,
         rotation_vel_accel: 1.,
         accel: 800.,
-        friction: 0.02,
+        friction: 1.,
         gravity: 100.,
         sprite: Sprite{
             texture: PLANES_TEXTURE_ID,
@@ -81,7 +80,7 @@ pub fn init_spec() -> GameSpec {
             center: Vec2{x: 15., y: 12.},
             angle: 90.,
         },
-        sprite_accel: Sprite {
+        sprite_accel: Sprite{
             texture: PLANES_TEXTURE_ID,
             rect: Rect{pos: Vec2{x: 88., y: 96.}, w: 30., h: 24.},
             center: Vec2{x: 15., y: 12.},
@@ -108,7 +107,7 @@ pub fn init_spec() -> GameSpec {
     let ship_spec_id: SpecId = 1;
     specs.push(Spec::ShipSpec(ship_spec));
     let shooter_spec = ShooterSpec {
-        sprite: Sprite {
+        sprite: Sprite{
             texture: PLANES_TEXTURE_ID,
             rect: Rect{pos: Vec2{x: 48., y: 248.}, w: 32., h: 24.},
             center: Vec2{x: 16., y: 12.},
@@ -126,7 +125,7 @@ pub fn init_spec() -> GameSpec {
     let map = Map {
         w: SCREEN_WIDTH*10.,
         h: SCREEN_HEIGHT*10.,
-        background_color: Color::RGB(0x58, 0xB7, 0xFF),
+        background_color: Color(0x58, 0xB7, 0xFF),
         background_texture: MAP_TEXTURE_ID,
     };
     let camera_spec = CameraSpec {

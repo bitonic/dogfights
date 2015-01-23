@@ -8,7 +8,6 @@ extern crate conf;
 
 use sdl2::SdlResult;
 use sdl2::render::Renderer;
-use sdl2::pixels::Color;
 use std::ops::Deref;
 
 use geometry::*;
@@ -39,7 +38,7 @@ impl RenderEnv {
         let background_texture = self.textures.get(&map.background_texture).unwrap();
 
         // Fill the whole screen with the background color
-        try!(self.renderer.set_draw_color(map.background_color));
+        try!(self.renderer.set_draw_color(map.background_color.to_sdl_color()));
         let rect = sdl2::rect::Rect {
             x: 0, y: 0, w: SCREEN_WIDTH as i32, h: SCREEN_HEIGHT as i32
         };
@@ -117,7 +116,7 @@ impl RenderEnv {
     }
 
     fn bbox(&self, bbox: &BBox,trans: &Transform) -> SdlResult<()> {
-        try!(self.renderer.set_draw_color(Color::RGB(0xFF, 0x00, 0x00)));
+        try!(self.renderer.set_draw_color(sdl2::pixels::Color::RGB(0xFF, 0x00, 0x00)));
         for rect in bbox.rects.iter() {
             let (tl, tr, bl, br) = rect.transform(trans);
             try!(self.renderer.draw_line(tl.point(), tr.point()));
