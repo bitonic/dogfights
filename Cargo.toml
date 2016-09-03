@@ -1,0 +1,6 @@
+[package]
+name = "dogfights"
+version = "0.1.0"
+authors = ["Francesco Mazzoli <f@mazzo.li>"]
+
+[dependencies]
