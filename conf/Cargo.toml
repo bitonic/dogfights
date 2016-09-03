@@ -1,9 +1,0 @@
-[package]
-name = "conf"
-version = "0.0.1"
-authors = ["Francesco Mazzoli <f@mazzo.li>"]
-
-[lib]
-name = "conf"
-path = "lib.rs"
-
