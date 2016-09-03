@@ -7,4 +7,3 @@ authors = ["Francesco Mazzoli <f@mazzo.li>"]
 sdl2 = "0.22.0"
 sdl2_image = "0.22.0"
 rustc-serialize = "*"
-bincode = "0.6.0"
