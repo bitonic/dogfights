@@ -4,3 +4,5 @@ version = "0.1.0"
 authors = ["Francesco Mazzoli <f@mazzo.li>"]
 
 [dependencies]
+sdl2 = "0.22.0"
+sdl2_image = "0.22.0"

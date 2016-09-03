@@ -38,3 +38,4 @@ tramp
 /Cargo.lock
 /*/target/
 /*/Cargo.lock
+target
