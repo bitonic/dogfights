@@ -6,3 +6,4 @@ pub mod vec;
 pub mod spec;
 pub mod texture;
 pub mod transformation;
+pub mod rect;

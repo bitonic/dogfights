@@ -51,14 +51,6 @@ impl Transformation {
             0., 0., 1.
         )
     }
-
-    #[inline]
-    pub fn apply_to(self, v: Vec2) -> Vec2 {
-        Vec2{
-            x: self.ix11*v.x + self.ix12*v.y + self.ix13,
-            y: self.ix21*v.x + self.ix22*v.y + self.ix23
-        }
-    }
 }
 
 impl Mul<Transformation> for Transformation {
@@ -131,5 +123,15 @@ impl Div<f32> for Transformation {
             self.ix21/other, self.ix22/other, self.ix23/other,
             self.ix31/other, self.ix32/other, self.ix33/other
         )
+    }
+}
+
+impl Vec2 {
+    #[inline]
+    pub fn transform(self, trans: Transformation) -> Vec2 {
+        Vec2{
+            x: trans.ix11*self.x + trans.ix12*self.y + trans.ix13,
+            y: trans.ix21*self.x + trans.ix22*self.y + trans.ix23
+        }
     }
 }
