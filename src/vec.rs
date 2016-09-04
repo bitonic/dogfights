@@ -1,6 +1,6 @@
 extern crate sdl2;
 
-use std::ops::{Add, Sub, Mul, Div};
+use std::ops::{Add, Sub, Mul, Div, Neg};
 
 // ---------------------------------------------------------------------
 // Vec
@@ -22,6 +22,7 @@ impl Add for Vec2 {
 impl Sub for Vec2 {
     type Output = Vec2;
 
+    #[inline]
     fn sub(self, other: Vec2) -> Vec2 {
         Vec2 {x : self.x - other.x, y: self.y - other.y}
     }
@@ -30,7 +31,8 @@ impl Sub for Vec2 {
 impl Mul<f32> for Vec2 {
     type Output = Vec2;
 
-    fn mul(self: Vec2, other: f32) -> Vec2 {
+    #[inline]
+    fn mul(self, other: f32) -> Vec2 {
         Vec2 {x: self.x * other, y: self.y * other}
     }
 }
@@ -38,8 +40,18 @@ impl Mul<f32> for Vec2 {
 impl Div<f32> for Vec2 {
     type Output = Vec2;
 
-    fn div(self: Vec2, other: f32) -> Vec2 {
+    #[inline]
+    fn div(self, other: f32) -> Vec2 {
         Vec2 {x: self.x / other, y: self.y / other}
+    }
+}
+
+impl Neg for Vec2 {
+    type Output = Vec2;
+
+    #[inline]
+    fn neg(self) -> Vec2 {
+        Vec2{x: -self.x, y: -self.y}
     }
 }
 

@@ -5,3 +5,4 @@ extern crate rustc_serialize; // Why do I need this here? I get an error otherwi
 pub mod vec;
 pub mod spec;
 pub mod texture;
+pub mod transformation;
